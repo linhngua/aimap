@@ -1,0 +1,9 @@
+{
+  "name": "aimap-worker",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "echo \"Tests require npm deps (offline)\""
+  },
+  "dependencies": {}
+}

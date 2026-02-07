@@ -1,0 +1,6 @@
+name = "aimap-worker"
+main = "src/index.js"
+compatibility_date = "2026-02-07"
+
+[vars]
+OPENAI_MODEL = "gpt-4.1-mini"

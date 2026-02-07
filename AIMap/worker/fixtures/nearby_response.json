@@ -1,0 +1,50 @@
+{
+  "query": {
+    "lat": 37.3349,
+    "lng": -122.009,
+    "radius_m": 800
+  },
+  "categories": {
+    "restaurants": [
+      {
+        "place_local_id": "p1",
+        "score": 0.83,
+        "why": "Easy, convenient stop for a quick bite near your tap point.",
+        "tags": ["quick", "casual"],
+        "best_for": "A simple meal or coffee break",
+        "cautions": ["Hours and menu may vary"]
+      }
+    ],
+    "bars": [
+      {
+        "place_local_id": "p2",
+        "score": 0.79,
+        "why": "Good option if you want a drink nearby without a long detour.",
+        "tags": ["nearby"],
+        "best_for": "A casual drink",
+        "cautions": ["May be busy at peak times"]
+      }
+    ],
+    "attractions": [
+      {
+        "place_local_id": "p3",
+        "score": 0.75,
+        "why": "A straightforward attraction choice if you want something non-food related.",
+        "tags": ["indoor"],
+        "best_for": "A quick cultural stop",
+        "cautions": ["Check ticketing and hours"]
+      }
+    ],
+    "shops": [
+      {
+        "place_local_id": "p4",
+        "score": 0.71,
+        "why": "Convenient shopping option close to your selected area.",
+        "tags": ["retail"],
+        "best_for": "Picking up essentials",
+        "cautions": ["Selection may be limited"]
+      }
+    ]
+  }
+}
+

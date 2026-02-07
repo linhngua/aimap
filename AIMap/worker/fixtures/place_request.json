@@ -1,0 +1,19 @@
+{
+  "place": {
+    "place_local_id": "p1",
+    "name": "Cafe Uno",
+    "lat": 37.3351,
+    "lng": -122.0092,
+    "address_short": "1 Infinite Loop Cupertino",
+    "raw_categories": ["cafe", "restaurant"],
+    "url": null,
+    "phone": null,
+    "rating": null,
+    "rating_count": null,
+    "price_level": null,
+    "open_now": null
+  },
+  "review_snippets": [],
+  "first_party_signals": {}
+}
+
