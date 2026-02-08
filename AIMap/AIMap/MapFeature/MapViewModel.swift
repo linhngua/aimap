@@ -5,8 +5,14 @@ import SwiftUI
 
 @MainActor
 final class MapViewModel: ObservableObject {
-    @AppStorage("backend_base_url") var backendBaseURLString: String = ""
+    @AppStorage("backend_base_url") var backendBaseURLString: String = "https://map.petetranfab.com"
     @AppStorage("search_radius_m") var radiusMeters: Double = 800
+
+    init() {
+        if backendBaseURLString.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            backendBaseURLString = "https://map.petetranfab.com"
+        }
+    }
 
     @Published var cameraPosition: MapCameraPosition = .region(
         MKCoordinateRegion(
@@ -164,9 +170,17 @@ final class MapViewModel: ObservableObject {
     }
 
     private func makeBackendClient() throws -> BackendClient {
-        guard let url = URL(string: backendBaseURLString.trimmingCharacters(in: .whitespacesAndNewlines)),
-              !backendBaseURLString.isEmpty
-        else {
+        let raw = backendBaseURLString.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !raw.isEmpty else {
+            throw BackendClientError.invalidURL
+        }
+        let normalized: String
+        if raw.lowercased().hasPrefix("http://") || raw.lowercased().hasPrefix("https://") {
+            normalized = raw
+        } else {
+            normalized = "https://\(raw)"
+        }
+        guard let url = URL(string: normalized) else {
             throw BackendClientError.invalidURL
         }
         return BackendClient(configuration: .init(baseURL: url))

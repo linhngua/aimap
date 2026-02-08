@@ -33,3 +33,14 @@ export function roundToCell(value, decimals) {
 export function timeBucketSeconds(nowSeconds, bucketSeconds) {
   return Math.floor(nowSeconds / bucketSeconds) * bucketSeconds;
 }
+
+export function isTestMode(env) {
+  const mode = env?.MODE;
+  return typeof mode === "string" && mode.toLowerCase() === "test";
+}
+
+export function safeLog(env, ...args) {
+  if (!isTestMode(env)) return;
+  // eslint-disable-next-line no-console
+  console.log(...args);
+}

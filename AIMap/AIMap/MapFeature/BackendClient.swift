@@ -6,19 +6,39 @@ enum BackendClientError: Error {
     case httpError(statusCode: Int, body: String)
 }
 
+extension BackendClientError: LocalizedError {
+    var errorDescription: String? {
+        switch self {
+        case .invalidURL:
+            return "Backend URL is missing or invalid. Open Settings (gear) and set the Worker base URL (example: https://map.petetranfab.com)."
+        case .invalidResponse:
+            return "Unexpected response from backend."
+        case .httpError(let statusCode, let body):
+            let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty {
+                return "Backend returned HTTP \(statusCode)."
+            }
+            let snippet = String(trimmed.prefix(400))
+            return "Backend returned HTTP \(statusCode): \(snippet)"
+        }
+    }
+}
+
 actor BackendClient {
     struct Configuration {
         let baseURL: URL
-        var timeoutSeconds: TimeInterval = 12
+        var timeoutSeconds: TimeInterval = 20
         var retries: Int = 1
     }
 
     let configuration: Configuration
     private let session: URLSession
+    private let shouldLog: Bool
 
     init(configuration: Configuration, session: URLSession = .shared) {
         self.configuration = configuration
         self.session = session
+        shouldLog = ProcessInfo.processInfo.environment["MODE"]?.lowercased() == "test"
     }
 
     func nearby(request: NearbyRequest, bypassCache: Bool) async throws -> NearbyResponse {
@@ -45,7 +65,9 @@ actor BackendClient {
         responseType: Response.Type,
         bypassCache: Bool
     ) async throws -> Response {
-        let url = configuration.baseURL.appendingPathComponent(path)
+        guard let url = URL(string: path, relativeTo: configuration.baseURL)?.absoluteURL else {
+            throw BackendClientError.invalidURL
+        }
         var urlRequest = URLRequest(url: url)
         urlRequest.httpMethod = "POST"
         urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -56,27 +78,63 @@ actor BackendClient {
         urlRequest.timeoutInterval = configuration.timeoutSeconds
         let encoder = JSONEncoder()
         encoder.keyEncodingStrategy = .convertToSnakeCase
-        urlRequest.httpBody = try encoder.encode(body)
+        let requestBody = try encoder.encode(body)
+        urlRequest.httpBody = requestBody
 
         var lastError: Error?
         for attempt in 0...configuration.retries {
             do {
+                if shouldLog {
+                    let attemptLabel = "\(attempt + 1)/\(configuration.retries + 1)"
+                    log("→ \(url.absoluteString) [attempt \(attemptLabel)] bypassCache=\(bypassCache) bytes=\(requestBody.count)")
+                    if let bodyString = String(data: requestBody, encoding: .utf8) {
+                        log("request: \(truncate(bodyString))")
+                    }
+                }
+
+                let start = Date()
                 let (data, response) = try await session.data(for: urlRequest)
+                let elapsedMs = Int(Date().timeIntervalSince(start) * 1000)
                 guard let http = response as? HTTPURLResponse else {
                     throw BackendClientError.invalidResponse
                 }
                 guard (200..<300).contains(http.statusCode) else {
                     let bodyString = String(data: data, encoding: .utf8) ?? ""
+                    if shouldLog {
+                        log("← status=\(http.statusCode) in \(elapsedMs)ms body=\(truncate(bodyString))")
+                    }
                     throw BackendClientError.httpError(statusCode: http.statusCode, body: bodyString)
                 }
+
+                if shouldLog {
+                    if let bodyString = String(data: data, encoding: .utf8) {
+                        log("← status=\(http.statusCode) in \(elapsedMs)ms response=\(truncate(bodyString))")
+                    } else {
+                        log("← status=\(http.statusCode) in \(elapsedMs)ms response=<\(data.count) bytes>")
+                    }
+                }
+
                 let decoder = JSONDecoder()
                 decoder.keyDecodingStrategy = .convertFromSnakeCase
                 return try decoder.decode(Response.self, from: data)
             } catch {
                 lastError = error
+                if shouldLog {
+                    let attemptLabel = "\(attempt + 1)/\(configuration.retries + 1)"
+                    log("✕ attempt \(attemptLabel) error: \(String(describing: error))")
+                }
                 if attempt >= configuration.retries { break }
             }
         }
         throw lastError ?? BackendClientError.invalidResponse
+    }
+
+    private func log(_ message: String) {
+        print("[BackendClient] \(message)")
+    }
+
+    private func truncate(_ string: String, maxCharacters: Int = 4000) -> String {
+        guard string.count > maxCharacters else { return string }
+        return String(string.prefix(maxCharacters)) + "…"
     }
 }

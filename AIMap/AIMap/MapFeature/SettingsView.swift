@@ -7,7 +7,7 @@ struct SettingsView: View {
     var body: some View {
         Form {
             Section("Backend") {
-                TextField("https://your-worker.example.com", text: $backendBaseURL)
+                TextField("https://map.petetranfab.com", text: $backendBaseURL)
                     .textInputAutocapitalization(.never)
                     .keyboardType(.URL)
                     .autocorrectionDisabled()
@@ -40,4 +40,3 @@ struct SettingsView: View {
         }
     }
 }
-

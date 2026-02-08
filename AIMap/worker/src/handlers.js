@@ -7,7 +7,78 @@ import {
   PlaceDetailResponseSchema,
 } from "./schema.js";
 import { getCache, nearbyCacheKey, placeCacheKey, setCache } from "./cache.js";
-import { errorResponse, getBypassCache, jsonResponse } from "./utils.js";
+import { errorResponse, getBypassCache, jsonResponse, safeLog } from "./utils.js";
+
+function isObject(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function normalizeNearbyItemKeys(item) {
+  if (!isObject(item)) return item;
+  const normalized = { ...item };
+  if (normalized.place_local_id === undefined && normalized.placeLocalId !== undefined) {
+    normalized.place_local_id = normalized.placeLocalId;
+    delete normalized.placeLocalId;
+  }
+  if (normalized.best_for === undefined && normalized.bestFor !== undefined) {
+    normalized.best_for = normalized.bestFor;
+    delete normalized.bestFor;
+  }
+  if (typeof normalized.score === "string") {
+    const score = Number.parseFloat(normalized.score);
+    if (!Number.isNaN(score)) normalized.score = score;
+  }
+  if (typeof normalized.tags === "string") normalized.tags = [normalized.tags];
+  if (typeof normalized.cautions === "string") normalized.cautions = [normalized.cautions];
+  return normalized;
+}
+
+function normalizeNearbyLLMOutput(input, request) {
+  if (!isObject(input)) return input;
+
+  const categoryKeys = ["restaurants", "bars", "attractions", "shops"];
+  const hasCategoriesObject = isObject(input.categories);
+  const hasTopLevelArray = categoryKeys.some((k) => Array.isArray(input[k]));
+  if (!hasCategoriesObject && !hasTopLevelArray) return input;
+
+  const sourceCategories = isObject(input.categories) ? input.categories : input;
+
+  const categories = {};
+  for (const key of categoryKeys) {
+    const value = sourceCategories[key];
+    categories[key] = Array.isArray(value) ? value.map(normalizeNearbyItemKeys) : [];
+  }
+
+  let query = input.query;
+  if (!isObject(query)) {
+    query = { lat: request.lat, lng: request.lng, radius_m: request.radius_m };
+  } else {
+    query = {
+      lat: typeof query.lat === "number" ? query.lat : request.lat,
+      lng: typeof query.lng === "number" ? query.lng : request.lng,
+      radius_m: Number.isInteger(query.radius_m) ? query.radius_m : request.radius_m,
+    };
+  }
+
+  return { query, categories };
+}
+
+function normalizePlaceDetailLLMOutput(input) {
+  if (!isObject(input)) return input;
+  const normalized = { ...input };
+  if (normalized.place_local_id === undefined && normalized.placeLocalId !== undefined) {
+    normalized.place_local_id = normalized.placeLocalId;
+    delete normalized.placeLocalId;
+  }
+  if (typeof normalized.mode === "string") {
+    const mode = normalized.mode.toLowerCase();
+    if (mode === "firstparty" || mode === "first-party") normalized.mode = "first_party";
+  }
+  if (typeof normalized.highlights === "string") normalized.highlights = [normalized.highlights];
+  if (typeof normalized.cautions === "string") normalized.cautions = [normalized.cautions];
+  if (typeof normalized.tips === "string") normalized.tips = [normalized.tips];
+  return normalized;
+}
 
 function validateNearbyReferences(response, candidates) {
   const candidateIds = new Set(candidates.map((c) => c.place_local_id));
@@ -23,6 +94,58 @@ function validateNearbyReferences(response, candidates) {
   for (const item of allItems) {
     if (!candidateIds.has(item.place_local_id)) {
       violations.push(item.place_local_id);
+    }
+  }
+  return violations;
+}
+
+function collectPlaceDetailText(detail) {
+  return [
+    detail.summary,
+    ...(Array.isArray(detail.highlights) ? detail.highlights : []),
+    ...(Array.isArray(detail.cautions) ? detail.cautions : []),
+    ...(Array.isArray(detail.tips) ? detail.tips : []),
+    detail.disclosure,
+  ].filter((t) => typeof t === "string" && t.length > 0);
+}
+
+function excerpt(text, index, length) {
+  const start = Math.max(0, index - 24);
+  const end = Math.min(text.length, index + length + 24);
+  return text.slice(start, end);
+}
+
+function findDisallowedReviewLanguage(texts) {
+  const patterns = [
+    {
+      id: "people_say",
+      regex: /\b(people|customers|patrons|locals|visitors|guests)\s+(say|mention|note|report|rave|complain)\b/i,
+    },
+    { id: "reviews_say", regex: /\breviews?\s+(say|mention|note|report|often|frequently)\b/i },
+    { id: "according_to_reviews", regex: /\baccording to (the )?reviews?\b/i },
+    { id: "reviewers", regex: /\breviewers?\b/i },
+  ];
+
+  const violations = [];
+  for (const text of texts) {
+    const quoteIndex = text.search(/[“”"]/);
+    if (quoteIndex !== -1) {
+      violations.push({
+        id: "quotes",
+        excerpt: excerpt(text, quoteIndex, 1),
+      });
+      continue;
+    }
+
+    for (const pattern of patterns) {
+      const match = text.match(pattern.regex);
+      if (match && match.index !== undefined) {
+        violations.push({
+          id: pattern.id,
+          excerpt: excerpt(text, match.index, match[0].length),
+        });
+        break;
+      }
     }
   }
   return violations;
@@ -51,12 +174,22 @@ export async function handleNearby(request, env) {
     nowSeconds,
   });
 
+  safeLog(env, "[nearby] request", {
+    lat: payload.lat,
+    lng: payload.lng,
+    radius_m: payload.radius_m,
+    candidates: payload.candidates.length,
+    bypass_cache: bypassCache,
+    cache_key: cacheKey,
+  });
+
   if (!bypassCache) {
     const cached = getCache(cacheKey, nowSeconds);
     if (cached) {
       try {
         const data = JSON.parse(cached);
         const validated = NearbyResponseSchema.parse(data);
+        safeLog(env, "[nearby] cache_hit", { cache_key: cacheKey });
         return jsonResponse(validated);
       } catch {
         // ignore cache parse errors
@@ -70,7 +203,7 @@ export async function handleNearby(request, env) {
       env,
       systemPrompt: NEARBY_SYSTEM_PROMPT,
       payload,
-      timeoutMs: 12_000,
+      timeoutMs: 20_000,
       retries: 1,
     });
   } catch (err) {
@@ -86,15 +219,26 @@ export async function handleNearby(request, env) {
 
   let response;
   try {
-    response = NearbyResponseSchema.parse(responseUnknown);
+    response = NearbyResponseSchema.parse(normalizeNearbyLLMOutput(responseUnknown, payload));
   } catch (err) {
+    safeLog(env, "[nearby] schema_error", { error: String(err), llm_json: responseUnknown });
     return errorResponse("LLM returned invalid schema", 502, String(err));
   }
 
   const unknownIds = validateNearbyReferences(response, payload.candidates);
   if (unknownIds.length > 0) {
+    safeLog(env, "[nearby] invalid_candidate_ids", { unknown_ids: unknownIds });
     return errorResponse("LLM referenced unknown candidate ids", 502, { unknown_ids: unknownIds });
   }
+
+  safeLog(env, "[nearby] ok", {
+    counts: {
+      restaurants: response.categories.restaurants.length,
+      bars: response.categories.bars.length,
+      attractions: response.categories.attractions.length,
+      shops: response.categories.shops.length,
+    },
+  });
 
   const serialized = JSON.stringify(response);
   setCache(cacheKey, serialized, nowSeconds, 30 * 60);
@@ -119,12 +263,22 @@ export async function handlePlace(request, env) {
   const nowSeconds = Math.floor(Date.now() / 1000);
   const key = placeCacheKey(payload.place.place_local_id);
 
+  safeLog(env, "[place] request", {
+    place_local_id: payload.place.place_local_id,
+    name: payload.place.name,
+    bypass_cache: bypassCache,
+    cache_key: key,
+    review_snippets: payload.review_snippets.length,
+    first_party_keys: Object.keys(payload.first_party_signals).length,
+  });
+
   if (!bypassCache) {
     const cached = getCache(key, nowSeconds);
     if (cached) {
       try {
         const data = JSON.parse(cached);
         const validated = PlaceDetailResponseSchema.parse(data);
+        safeLog(env, "[place] cache_hit", { cache_key: key });
         return jsonResponse(validated);
       } catch {
         // ignore cache parse errors
@@ -138,7 +292,7 @@ export async function handlePlace(request, env) {
       env,
       systemPrompt: PLACE_SYSTEM_PROMPT,
       payload,
-      timeoutMs: 12_000,
+      timeoutMs: 20_000,
       retries: 1,
     });
   } catch (err) {
@@ -154,7 +308,7 @@ export async function handlePlace(request, env) {
 
   let response;
   try {
-    response = PlaceDetailResponseSchema.parse(responseUnknown);
+    response = PlaceDetailResponseSchema.parse(normalizePlaceDetailLLMOutput(responseUnknown));
   } catch (err) {
     return errorResponse("LLM returned invalid schema", 502, String(err));
   }
@@ -163,9 +317,21 @@ export async function handlePlace(request, env) {
     return errorResponse("place_local_id mismatch", 502);
   }
 
-  if (payload.review_snippets.length === 0 && response.mode !== "inference") {
-    return errorResponse("Mode must be inference when no snippets", 502);
+  const hasReviewSnippets = payload.review_snippets.length > 0;
+  const hasFirstPartySignals = Object.keys(payload.first_party_signals).length > 0;
+  const expectedMode = hasReviewSnippets ? "signals" : hasFirstPartySignals ? "first_party" : "inference";
+  if (response.mode !== expectedMode) {
+    return errorResponse("Invalid mode for provided signals", 502, { expected: expectedMode, got: response.mode });
   }
+
+  if (!hasReviewSnippets) {
+    const violations = findDisallowedReviewLanguage(collectPlaceDetailText(response));
+    if (violations.length > 0) {
+      return errorResponse("Disallowed review/quote language without review_snippets", 502, { violations });
+    }
+  }
+
+  safeLog(env, "[place] ok", { place_local_id: response.place_local_id, mode: response.mode });
 
   const serialized = JSON.stringify(response);
   setCache(key, serialized, nowSeconds, 7 * 24 * 60 * 60);
