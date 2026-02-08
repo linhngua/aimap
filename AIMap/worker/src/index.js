@@ -1,4 +1,5 @@
 import { handleNearby, handlePlace } from "./handlers.js";
+import { handleNearbyCached, handleNearbyRefresh } from "./nearbyPipeline.js";
 import { errorResponse } from "./utils.js";
 
 function withCors(response) {
@@ -20,18 +21,22 @@ export default {
       return withCors(errorResponse("Method not allowed", 405));
     }
 
-    if (!env.OPENAI_API_KEY) {
-      return withCors(errorResponse("Missing OPENAI_API_KEY", 500));
-    }
-
     if (url.pathname === "/v1/map/nearby") {
+      if (!env.OPENAI_API_KEY) return withCors(errorResponse("Missing OPENAI_API_KEY", 500));
       return withCors(await handleNearby(request, env));
     }
     if (url.pathname === "/v1/map/place") {
+      if (!env.OPENAI_API_KEY) return withCors(errorResponse("Missing OPENAI_API_KEY", 500));
       return withCors(await handlePlace(request, env));
+    }
+    if (url.pathname === "/v1/map/nearby_cached") {
+      return withCors(await handleNearbyCached(request, env));
+    }
+    if (url.pathname === "/v1/map/nearby_refresh") {
+      if (!env.OPENAI_API_KEY) return withCors(errorResponse("Missing OPENAI_API_KEY", 500));
+      return withCors(await handleNearbyRefresh(request, env));
     }
 
     return withCors(errorResponse("Not found", 404));
   },
 };
-

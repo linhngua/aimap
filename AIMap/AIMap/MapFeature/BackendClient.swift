@@ -10,7 +10,7 @@ extension BackendClientError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .invalidURL:
-            return "Backend URL is missing or invalid. Open Settings (gear) and set the Worker base URL (example: https://map.petetranfab.com)."
+            return "Backend URL is missing or invalid."
         case .invalidResponse:
             return "Unexpected response from backend."
         case .httpError(let statusCode, let body):
@@ -46,6 +46,24 @@ actor BackendClient {
             path: "/v1/map/nearby",
             body: request,
             responseType: NearbyResponse.self,
+            bypassCache: bypassCache
+        )
+    }
+
+    func nearbyCached(request: NearbyCachedRequest, bypassCache: Bool) async throws -> NearbyCachedEnvelope {
+        try await post(
+            path: "/v1/map/nearby_cached",
+            body: request,
+            responseType: NearbyCachedEnvelope.self,
+            bypassCache: bypassCache
+        )
+    }
+
+    func nearbyRefresh(request: NearbyRefreshRequest, bypassCache: Bool) async throws -> NearbyRefreshEnvelope {
+        try await post(
+            path: "/v1/map/nearby_refresh",
+            body: request,
+            responseType: NearbyRefreshEnvelope.self,
             bypassCache: bypassCache
         )
     }

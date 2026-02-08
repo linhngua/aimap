@@ -1,0 +1,10 @@
+{
+  "lat": 37.3349,
+  "lng": -122.009,
+  "radius_m": 800,
+  "categories": ["restaurants", "bars", "attractions", "shops"],
+  "cell_id": "9q9hv8q",
+  "time_bucket": "1700000000",
+  "client_etag": null
+}
+

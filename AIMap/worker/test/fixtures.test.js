@@ -32,3 +32,24 @@ test("fixtures validate: place", () => {
   assert.ok(PlaceDetailResponseSchema.safeParse(res).success);
 });
 
+test("fixtures validate: nearby_cached envelope", () => {
+  const req = readFixture("nearby_cached_request.json");
+  const res = readFixture("nearby_cached_response.json");
+  assert.equal(typeof req.lat, "number");
+  assert.equal(typeof req.lng, "number");
+  assert.ok(Array.isArray(req.categories));
+  assert.equal(typeof req.cell_id, "string");
+  assert.equal(typeof req.time_bucket, "string");
+
+  assert.equal(typeof res.hit, "boolean");
+  assert.equal(typeof res.stale, "boolean");
+  assert.ok(["exact", "approx", "miss"].includes(res.accuracy));
+});
+
+test("fixtures validate: nearby_refresh envelope", () => {
+  const req = readFixture("nearby_refresh_request.json");
+  const res = readFixture("nearby_refresh_response.json");
+  assert.ok(Array.isArray(req.candidates));
+  assert.ok(["ok", "unchanged"].includes(res.status));
+  assert.equal(typeof res.etag, "string");
+});

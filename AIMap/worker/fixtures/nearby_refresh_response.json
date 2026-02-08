@@ -1,0 +1,62 @@
+{
+  "status": "ok",
+  "etag": "etag_example_123",
+  "payload": {
+    "query": { "lat": 37.3349, "lng": -122.009, "radius_m": 800 },
+    "candidates": [
+      {
+        "place_local_id": "p1",
+        "name": "Cafe Uno",
+        "lat": 37.3351,
+        "lng": -122.0092,
+        "address_short": "1 Infinite Loop Cupertino",
+        "raw_categories": ["cafe", "restaurant"],
+        "url": null,
+        "phone": null,
+        "rating": null,
+        "rating_count": null,
+        "price_level": null,
+        "open_now": null
+      },
+      {
+        "place_local_id": "p2",
+        "name": "Bar Dos",
+        "lat": 37.3345,
+        "lng": -122.0086,
+        "address_short": "Main St Cupertino",
+        "raw_categories": ["bar"],
+        "url": null,
+        "phone": null,
+        "rating": null,
+        "rating_count": null,
+        "price_level": null,
+        "open_now": null
+      }
+    ],
+    "categories": {
+      "restaurants": [
+        {
+          "place_local_id": "p1",
+          "score": 0.92,
+          "why": "Good nearby cafe/restaurant option.",
+          "tags": ["casual", "coffee"],
+          "best_for": "a quick bite",
+          "cautions": []
+        }
+      ],
+      "bars": [
+        {
+          "place_local_id": "p2",
+          "score": 0.88,
+          "why": "Solid nearby bar choice.",
+          "tags": ["drinks"],
+          "best_for": "a drink",
+          "cautions": []
+        }
+      ],
+      "attractions": [],
+      "shops": []
+    }
+  }
+}
+

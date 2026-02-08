@@ -3,46 +3,30 @@ import SwiftUI
 
 struct MapScreen: View {
     @StateObject private var viewModel = MapViewModel()
+    @FocusState private var isSearchFocused: Bool
+    @State private var locationQuery: String = ""
+    private let mapStyle: LuxuryMapStyle = .premium
 
     var body: some View {
         NavigationStack {
             ZStack(alignment: .top) {
-                MapReader { proxy in
-                    Map(position: $viewModel.cameraPosition) {
-                        ForEach(viewModel.visiblePlaces) { place in
-                            Annotation(place.name, coordinate: place.coordinate) {
-                                Button {
-                                    viewModel.selectPlace(place)
-                                } label: {
-                                    Image(systemName: "mappin.circle.fill")
-                                        .font(.title2)
-                                        .symbolRenderingMode(.palette)
-                                        .foregroundStyle(.cyan, .black.opacity(0.55))
-                                        .shadow(color: .cyan.opacity(0.55), radius: 10)
-                                }
-                                .buttonStyle(.plain)
-                                .accessibilityLabel(place.name)
-                            }
+                LuxuryMapView(
+                    region: $viewModel.region,
+                    style: mapStyle,
+                    pins: pins,
+                    dropPinCoordinate: viewModel.lastTappedCoordinate,
+                    onTap: { coordinate in
+                        viewModel.handleMapTap(coordinate)
+                    },
+                    onSelectPin: { placeLocalId in
+                        if let place = viewModel.candidatesById[placeLocalId] {
+                            viewModel.selectPlace(place)
                         }
                     }
-                    .mapStyle(.standard(elevation: .realistic))
-                    .tint(.cyan)
-                    .mapControls {
-                        MapCompass()
-                        MapPitchToggle()
-                        MapScaleView()
-                    }
-                    .overlay {
-                        FuturisticMapOverlay()
-                    }
-                    .onTapGesture { location in
-                        if let coordinate = proxy.convert(location, from: .local) {
-                            viewModel.handleMapTap(coordinate)
-                        }
-                    }
-                }
+                )
 
                 VStack(spacing: 10) {
+                    locationSearchBar
                     categoryChips
                     statusBanner
                     Spacer()
@@ -50,8 +34,8 @@ struct MapScreen: View {
                 }
                 .padding(.top, 8)
             }
-            .navigationTitle("AI Map")
-            .tint(.cyan)
+            .navigationBarTitleDisplayMode(.inline)
+            .tint(Color(uiColor: mapStyle.accentColor))
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Button {
@@ -60,13 +44,20 @@ struct MapScreen: View {
                         Image(systemName: "gearshape")
                     }
                 }
+                ToolbarItem(placement: .principal) {
+                    Text("AI MAP")
+                        .font(.caption)
+                        .fontWeight(.regular)
+                        .foregroundStyle(Color(uiColor: mapStyle.accentColor))
+                        .accessibilityAddTraits(.isHeader)
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
                         viewModel.refreshNearby()
                     } label: {
                         Image(systemName: "arrow.clockwise")
                     }
-                    .disabled(viewModel.nearbyResponse == nil)
+                    .disabled(viewModel.lastTappedCoordinate == nil)
                     .accessibilityLabel("Refresh")
                 }
             }
@@ -92,6 +83,48 @@ struct MapScreen: View {
                 .presentationDetents([.medium, .large])
             }
         }
+        .task {
+            viewModel.centerOnUserLocationIfNeeded()
+        }
+    }
+
+    private var locationSearchBar: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "magnifyingglass")
+                .foregroundStyle(.secondary)
+
+            TextField("Search location", text: $locationQuery)
+                .textInputAutocapitalization(.words)
+                .autocorrectionDisabled()
+                .submitLabel(.search)
+                .focused($isSearchFocused)
+                .onSubmit {
+                    viewModel.searchForLocation(locationQuery)
+                    isSearchFocused = false
+                }
+
+            if viewModel.isSearchingLocation {
+                ProgressView()
+            } else if !locationQuery.isEmpty {
+                Button {
+                    locationQuery = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Clear search")
+            }
+        }
+        .padding(.vertical, 10)
+        .padding(.horizontal, 12)
+        .background(.thinMaterial)
+        .clipShape(RoundedRectangle(cornerRadius: 14))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14)
+                .stroke(Color(uiColor: mapStyle.accentColor).opacity(0.35), lineWidth: 1)
+        )
+        .padding(.horizontal)
     }
 
     private var categoryChips: some View {
@@ -129,6 +162,13 @@ struct MapScreen: View {
                 .padding(10)
                 .background(.thinMaterial)
                 .clipShape(RoundedRectangle(cornerRadius: 12))
+            } else if let message = viewModel.locationSearchErrorMessage {
+                Text(message)
+                    .font(.footnote)
+                    .foregroundStyle(.red)
+                    .padding(10)
+                    .background(.thinMaterial)
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
             } else if let message = viewModel.nearbyErrorMessage {
                 Text(message)
                     .font(.footnote)
@@ -136,9 +176,16 @@ struct MapScreen: View {
                     .padding(10)
                     .background(.thinMaterial)
                     .clipShape(RoundedRectangle(cornerRadius: 12))
-            } else if viewModel.nearbyResponse == nil {
+            } else if viewModel.nearbyPayload == nil {
                 Text("Tap anywhere on the map to search.")
                     .font(.footnote)
+                    .padding(10)
+                    .background(.thinMaterial)
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+            } else if viewModel.nearbyAccuracy == .approx {
+                Text("Showing nearby cached results (approx).")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
                     .padding(10)
                     .background(.thinMaterial)
                     .clipShape(RoundedRectangle(cornerRadius: 12))
@@ -148,7 +195,7 @@ struct MapScreen: View {
 
     private var resultsList: some View {
         VStack(spacing: 0) {
-            if viewModel.nearbyResponse != nil {
+            if viewModel.nearbyPayload != nil {
                 List {
                     ForEach(viewModel.rankedItemsForSelectedCategory) { ranked in
                         if let place = viewModel.candidatesById[ranked.placeLocalId] {
@@ -183,6 +230,19 @@ struct MapScreen: View {
                 .padding(.horizontal)
                 .padding(.bottom, 10)
             }
+        }
+    }
+
+    private var pins: [LuxuryMapPin] {
+        let baseOpacity: CGFloat = viewModel.nearbyAccuracy == .approx ? 0.55 : 1.0
+        return viewModel.visiblePlaces.map { place in
+            LuxuryMapPin(
+                id: place.placeLocalId,
+                title: place.name,
+                coordinate: place.coordinate,
+                opacity: baseOpacity,
+                isHighlighted: viewModel.selectedPlace?.placeLocalId == place.placeLocalId
+            )
         }
     }
 }

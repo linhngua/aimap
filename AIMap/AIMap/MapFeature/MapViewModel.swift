@@ -7,23 +7,90 @@ private let defaultBackendBaseURL = "https://map.petetranfab.com"
 
 @MainActor
 final class MapViewModel: ObservableObject {
+    private static let initialCenter = CLLocationCoordinate2D(latitude: 37.3349, longitude: -122.0090)
+    private static let tapDebounceNanoseconds: UInt64 = 220_000_000
+
     @AppStorage("backend_base_url") var backendBaseURLString: String = defaultBackendBaseURL
     @AppStorage("search_radius_m") var radiusMeters: Double = 800
+
+    private final class LocationDelegate: NSObject, CLLocationManagerDelegate {
+        let onAuthorizationChanged: (CLAuthorizationStatus) -> Void
+        let onLocation: (CLLocation) -> Void
+        let onError: (Error) -> Void
+
+        init(
+            onAuthorizationChanged: @escaping (CLAuthorizationStatus) -> Void,
+            onLocation: @escaping (CLLocation) -> Void,
+            onError: @escaping (Error) -> Void
+        ) {
+            self.onAuthorizationChanged = onAuthorizationChanged
+            self.onLocation = onLocation
+            self.onError = onError
+        }
+
+        func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
+            onAuthorizationChanged(manager.authorizationStatus)
+        }
+
+        func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
+            guard let location = locations.last else { return }
+            onLocation(location)
+        }
+
+        func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
+            onError(error)
+        }
+    }
+
+    private let locationManager = CLLocationManager()
+    private lazy var locationDelegate = LocationDelegate(
+        onAuthorizationChanged: { [weak self] status in
+            Task { @MainActor in
+                self?.handleAuthorizationChanged(status)
+            }
+        },
+        onLocation: { [weak self] location in
+            Task { @MainActor in
+                self?.handleLocationUpdate(location)
+            }
+        },
+        onError: { [weak self] error in
+            Task { @MainActor in
+                self?.handleLocationError(error)
+            }
+        }
+    )
+    private var hasCenteredOnUserLocation = false
+    private var lastCameraCenter: CLLocationCoordinate2D = initialCenter
 
     init() {
         if backendBaseURLString.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             backendBaseURLString = defaultBackendBaseURL
         }
+
+        locationManager.desiredAccuracy = kCLLocationAccuracyHundredMeters
     }
 
-    @Published var cameraPosition: MapCameraPosition = .region(
-        MKCoordinateRegion(
-            center: CLLocationCoordinate2D(latitude: 37.3349, longitude: -122.0090),
-            span: MKCoordinateSpan(latitudeDelta: 0.08, longitudeDelta: 0.08)
-        )
-    )
+    @Published var region: MKCoordinateRegion = MKCoordinateRegion(
+        center: initialCenter,
+        span: MKCoordinateSpan(latitudeDelta: 0.08, longitudeDelta: 0.08)
+    ) {
+        didSet {
+            lastCameraCenter = region.center
+        }
+    }
 
-    @Published private(set) var nearbyResponse: NearbyResponse?
+    @Published private(set) var userLocation: CLLocationCoordinate2D?
+
+    @Published var isSearchingLocation: Bool = false
+    @Published var locationSearchErrorMessage: String?
+
+    @Published private(set) var nearbyPayload: NearbyPayload?
+    @Published private(set) var nearbyTier: NearbyTier?
+    @Published private(set) var nearbyAccuracy: NearbyAccuracy = .miss
+    @Published private(set) var nearbyEtag: String?
+    @Published private(set) var nearbyIsStale: Bool = false
+
     @Published private(set) var candidatesById: [String: CandidatePlace] = [:]
     @Published var selectedCategory: PlaceCategory = .restaurants
     @Published var lastTappedCoordinate: CLLocationCoordinate2D?
@@ -38,35 +105,53 @@ final class MapViewModel: ObservableObject {
 
     @Published var isShowingSettings: Bool = false
 
-    private var nearbyTask: Task<Void, Never>?
     private var placeTask: Task<Void, Never>?
+    private var locationSearchTask: Task<Void, Never>?
 
-    private var lastNearbyRequest: NearbyRequest?
     private let mapKitService = MapKitNearbySearchService()
+    private let nearbyCache = NearbyCache()
+
+    private var tapDebounceTask: Task<Void, Never>?
+    private var pipelineTask: Task<Void, Never>?
+    private var latestTapRequestId: Int = 0
+
+    private var lastSpatialKey: NearbySpatialKey?
+    private var lastCandidates: [CandidatePlace] = []
+
+    func centerOnUserLocationIfNeeded() {
+        guard !hasCenteredOnUserLocation else { return }
+        requestUserLocation()
+    }
+
+    func searchForLocation(_ query: String) {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+
+        locationSearchErrorMessage = nil
+        isSearchingLocation = true
+
+        locationSearchTask?.cancel()
+        locationSearchTask = Task { [trimmed] in
+            await performLocationSearch(query: trimmed)
+        }
+    }
 
     func handleMapTap(_ coordinate: CLLocationCoordinate2D) {
         lastTappedCoordinate = coordinate
         nearbyErrorMessage = nil
-        nearbyResponse = nil
-        candidatesById = [:]
-        placeDetail = nil
-        placeDetailErrorMessage = nil
-        selectedPlace = nil
 
-        nearbyTask?.cancel()
-        nearbyTask = Task {
-            await loadNearby(coordinate: coordinate, bypassCache: false)
+        tapDebounceTask?.cancel()
+        tapDebounceTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: Self.tapDebounceNanoseconds)
+            beginTapPipeline(coordinate: coordinate, bypassCache: false)
         }
     }
 
     func refreshNearby() {
-        guard let request = lastNearbyRequest else { return }
+        guard let coordinate = lastTappedCoordinate else { return }
         nearbyErrorMessage = nil
 
-        nearbyTask?.cancel()
-        nearbyTask = Task {
-            await loadNearby(with: request, bypassCache: true)
-        }
+        beginTapPipeline(coordinate: coordinate, bypassCache: true)
     }
 
     func selectCategory(_ category: PlaceCategory) {
@@ -95,7 +180,7 @@ final class MapViewModel: ObservableObject {
     }
 
     var categoryCounts: [PlaceCategory: Int] {
-        guard let categories = nearbyResponse?.categories else { return [:] }
+        guard let categories = nearbyPayload?.categories else { return [:] }
         return [
             .restaurants: categories.restaurants.count,
             .bars: categories.bars.count,
@@ -105,7 +190,7 @@ final class MapViewModel: ObservableObject {
     }
 
     var rankedItemsForSelectedCategory: [NearbyRankedItem] {
-        guard let categories = nearbyResponse?.categories else { return [] }
+        guard let categories = nearbyPayload?.categories else { return [] }
         let items: [NearbyRankedItem]
         switch selectedCategory {
         case .restaurants: items = categories.restaurants
@@ -118,43 +203,6 @@ final class MapViewModel: ObservableObject {
 
     var visiblePlaces: [CandidatePlace] {
         rankedItemsForSelectedCategory.compactMap { candidatesById[$0.placeLocalId] }
-    }
-
-    private func loadNearby(coordinate: CLLocationCoordinate2D, bypassCache: Bool) async {
-        isLoadingNearby = true
-        defer { isLoadingNearby = false }
-
-        do {
-            var service = mapKitService
-            service.configuration.radiusMeters = radiusMeters
-            let candidates = try await service.fetchCandidates(near: coordinate)
-            let request = NearbyRequest(
-                lat: coordinate.latitude,
-                lng: coordinate.longitude,
-                radiusM: Int(radiusMeters),
-                candidates: candidates,
-                userContext: nil
-            )
-            lastNearbyRequest = request
-            await loadNearby(with: request, bypassCache: bypassCache)
-        } catch {
-            nearbyErrorMessage = error.localizedDescription
-        }
-    }
-
-    private func loadNearby(with request: NearbyRequest, bypassCache: Bool) async {
-        isLoadingNearby = true
-        defer { isLoadingNearby = false }
-
-        do {
-            let client = try makeBackendClient()
-            let response = try await client.nearby(request: request, bypassCache: bypassCache)
-            nearbyResponse = response
-            candidatesById = Dictionary(uniqueKeysWithValues: request.candidates.map { ($0.placeLocalId, $0) })
-            selectedCategory = defaultCategory(from: response.categories)
-        } catch {
-            nearbyErrorMessage = error.localizedDescription
-        }
     }
 
     private func loadPlaceDetail(place: CandidatePlace, bypassCache: Bool) async {
@@ -203,5 +251,355 @@ final class MapViewModel: ObservableObject {
             return lhs.2 > rhs.2
         }
         return sorted.first?.0 ?? .restaurants
+    }
+
+    private func requestUserLocation() {
+        guard CLLocationManager.locationServicesEnabled() else { return }
+        locationManager.delegate = locationDelegate
+
+        switch locationManager.authorizationStatus {
+        case .notDetermined:
+            locationManager.requestWhenInUseAuthorization()
+        case .authorizedAlways, .authorizedWhenInUse:
+            locationManager.requestLocation()
+        case .restricted, .denied:
+            break
+        @unknown default:
+            break
+        }
+    }
+
+    private func handleAuthorizationChanged(_ status: CLAuthorizationStatus) {
+        switch status {
+        case .authorizedAlways, .authorizedWhenInUse:
+            locationManager.requestLocation()
+        case .restricted, .denied:
+            break
+        case .notDetermined:
+            break
+        @unknown default:
+            break
+        }
+    }
+
+    private func handleLocationUpdate(_ location: CLLocation) {
+        let coordinate = location.coordinate
+        userLocation = coordinate
+        guard !hasCenteredOnUserLocation else { return }
+        hasCenteredOnUserLocation = true
+        lastCameraCenter = coordinate
+        region = MKCoordinateRegion(
+            center: coordinate,
+            span: MKCoordinateSpan(latitudeDelta: 0.08, longitudeDelta: 0.08)
+        )
+    }
+
+    private func handleLocationError(_ error: Error) {
+        // keep silent; the map still works without location permission
+        _ = error
+    }
+
+    private func performLocationSearch(query: String) async {
+        defer { isSearchingLocation = false }
+
+        do {
+            let request = MKLocalSearch.Request()
+            request.naturalLanguageQuery = query
+            request.region = MKCoordinateRegion(
+                center: lastCameraCenter,
+                span: MKCoordinateSpan(latitudeDelta: 0.6, longitudeDelta: 0.6)
+            )
+            let search = MKLocalSearch(request: request)
+            let response = try await search.start()
+            guard let first = response.mapItems.first else {
+                locationSearchErrorMessage = "No results for \"\(query)\"."
+                return
+            }
+
+            hasCenteredOnUserLocation = true
+            let coordinate = first.placemark.coordinate
+            lastCameraCenter = coordinate
+            region = MKCoordinateRegion(
+                center: coordinate,
+                span: MKCoordinateSpan(latitudeDelta: 0.08, longitudeDelta: 0.08)
+            )
+        } catch is CancellationError {
+            // ignore
+        } catch {
+            locationSearchErrorMessage = "Search failed: \(error.localizedDescription)"
+        }
+    }
+
+    // MARK: - Progressive nearby pipeline
+
+    private func beginTapPipeline(coordinate: CLLocationCoordinate2D, bypassCache: Bool) {
+        latestTapRequestId += 1
+        let requestId = latestTapRequestId
+        lastCameraCenter = coordinate
+        nearbyIsStale = false
+
+        pipelineTask?.cancel()
+        pipelineTask = Task { @MainActor in
+            await runNearbyPipeline(requestId: requestId, coordinate: coordinate, bypassCache: bypassCache)
+        }
+    }
+
+    private func applyNearby(payload: NearbyPayload, tier: NearbyTier, accuracy: NearbyAccuracy, etag: String?, stale: Bool) {
+        nearbyPayload = payload
+        nearbyTier = tier
+        nearbyAccuracy = accuracy
+        nearbyEtag = etag
+        nearbyIsStale = stale
+        candidatesById = Dictionary(uniqueKeysWithValues: payload.candidates.map { ($0.placeLocalId, $0) })
+        if candidatesById[selectedPlace?.placeLocalId ?? ""] == nil {
+            selectedPlace = nil
+            placeDetail = nil
+            placeDetailErrorMessage = nil
+        }
+        let counts = [
+            PlaceCategory.restaurants: payload.categories.restaurants.count,
+            PlaceCategory.bars: payload.categories.bars.count,
+            PlaceCategory.attractions: payload.categories.attractions.count,
+            PlaceCategory.shops: payload.categories.shops.count,
+        ]
+        if let currentCount = counts[selectedCategory], currentCount > 0 {
+            // keep current selection
+        } else {
+            selectedCategory = defaultCategory(from: payload.categories)
+        }
+    }
+
+    private func runNearbyPipeline(requestId: Int, coordinate: CLLocationCoordinate2D, bypassCache: Bool) async {
+        isLoadingNearby = true
+        defer { isLoadingNearby = false }
+
+        let spatialKey = NearbySpatialKey.make(coordinate: coordinate, radiusMeters: radiusMeters)
+        lastSpatialKey = spatialKey
+
+        let cache = nearbyCache
+        let radiusMeters = radiusMeters
+        let mapKitService = mapKitService
+        let clientEtagSnapshot = nearbyEtag
+
+        let client = try? makeBackendClient()
+
+        if let cached = await nearbyCache.loadNearest(for: spatialKey, coordinate: coordinate),
+           requestId == latestTapRequestId {
+            applyNearby(
+                payload: cached.payload,
+                tier: .localCached,
+                accuracy: cached.accuracy,
+                etag: cached.etag,
+                stale: false
+            )
+            await cache.upsert(
+                payload: cached.payload,
+                spatialKey: cached.spatialKey,
+                etag: cached.etag,
+                accuracy: cached.accuracy,
+                sourceCellId: cached.sourceCellId,
+                sourceDistanceM: cached.sourceDistanceM,
+                producedAt: cached.producedAt
+            )
+        }
+
+        var mapKitCandidates: [CandidatePlace]?
+        var refreshNeeded: Bool = false
+        var cachedEnvelope: NearbyCachedEnvelope?
+
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask { [weak self] in
+                guard let self else { return }
+                do {
+                    var service = mapKitService
+                    service.configuration.radiusMeters = radiusMeters
+                    let candidates = try await service.fetchCandidates(near: coordinate)
+                    let trimmed = Array(candidates.prefix(40))
+                    await MainActor.run {
+                        guard requestId == self.latestTapRequestId else { return }
+                        self.lastCandidates = trimmed
+                        mapKitCandidates = trimmed
+
+                        let payload = self.makeMapKitTierPayload(coordinate: coordinate, candidates: trimmed)
+                        self.applyNearby(payload: payload, tier: .mapKitRaw, accuracy: .exact, etag: nil, stale: false)
+                    }
+                } catch {
+                    await MainActor.run {
+                        guard requestId == self.latestTapRequestId else { return }
+                        self.nearbyErrorMessage = error.localizedDescription
+                    }
+                }
+            }
+
+            group.addTask { [weak self] in
+                guard let self else { return }
+                do {
+                    guard let client else { return }
+                    let request = NearbyCachedRequest(
+                        lat: coordinate.latitude,
+                        lng: coordinate.longitude,
+                        radiusM: Int(radiusMeters),
+                        categories: spatialKey.categories,
+                        cellId: spatialKey.cellId,
+                        timeBucket: spatialKey.timeBucket,
+                        clientEtag: clientEtagSnapshot
+                    )
+                    let envelope = try await client.nearbyCached(request: request, bypassCache: bypassCache)
+                    await MainActor.run {
+                        guard requestId == self.latestTapRequestId else { return }
+                        cachedEnvelope = envelope
+                        refreshNeeded = envelope.payload == nil || envelope.stale || envelope.accuracy != .exact
+                        if let payload = envelope.payload {
+                            self.applyNearby(
+                                payload: payload,
+                                tier: .serverCached,
+                                accuracy: envelope.accuracy,
+                                etag: envelope.etag,
+                                stale: envelope.stale
+                            )
+                        }
+                    }
+                    let shouldPersist = await MainActor.run { requestId == self.latestTapRequestId }
+                    if let payload = envelope.payload, shouldPersist {
+                        await cache.upsert(
+                            payload: payload,
+                            spatialKey: spatialKey,
+                            etag: envelope.etag,
+                            accuracy: envelope.accuracy,
+                            sourceCellId: envelope.sourceCellId,
+                            sourceDistanceM: envelope.sourceDistanceM,
+                            producedAt: Date()
+                        )
+                    }
+                } catch {
+                    await MainActor.run {
+                        guard requestId == self.latestTapRequestId else { return }
+                        self.nearbyErrorMessage = error.localizedDescription
+                        refreshNeeded = true
+                    }
+                }
+            }
+
+            await group.waitForAll()
+        }
+
+        guard requestId == latestTapRequestId else { return }
+
+        if let envelope = cachedEnvelope, envelope.payload != nil, !refreshNeeded {
+            return
+        }
+
+        guard refreshNeeded else { return }
+        guard let candidates = mapKitCandidates else { return }
+        guard let client else { return }
+
+        do {
+            let refreshRequest = NearbyRefreshRequest(
+                lat: coordinate.latitude,
+                lng: coordinate.longitude,
+                radiusM: Int(radiusMeters),
+                categories: spatialKey.categories,
+                cellId: spatialKey.cellId,
+                timeBucket: spatialKey.timeBucket,
+                candidates: candidates,
+                clientEtag: nearbyEtag
+            )
+            let refreshEnvelope = try await client.nearbyRefresh(request: refreshRequest, bypassCache: bypassCache)
+            guard requestId == latestTapRequestId else { return }
+
+            switch refreshEnvelope.status {
+            case .unchanged:
+                nearbyEtag = refreshEnvelope.etag
+            case .ok:
+                if let payload = refreshEnvelope.payload {
+                    applyNearby(payload: payload, tier: .fresh, accuracy: .exact, etag: refreshEnvelope.etag, stale: false)
+                    await cache.upsert(
+                        payload: payload,
+                        spatialKey: spatialKey,
+                        etag: refreshEnvelope.etag,
+                        accuracy: .exact,
+                        sourceCellId: nil,
+                        sourceDistanceM: nil,
+                        producedAt: Date()
+                    )
+                }
+            }
+        } catch {
+            guard requestId == latestTapRequestId else { return }
+            nearbyErrorMessage = error.localizedDescription
+        }
+    }
+
+    private func makeMapKitTierPayload(coordinate: CLLocationCoordinate2D, candidates: [CandidatePlace]) -> NearbyPayload {
+        let query = NearbyQuery(lat: coordinate.latitude, lng: coordinate.longitude, radiusM: Int(radiusMeters))
+        let categories = cheapGroupCandidates(candidates)
+        return NearbyPayload(query: query, candidates: candidates, categories: categories)
+    }
+
+    private func cheapGroupCandidates(_ candidates: [CandidatePlace]) -> NearbyCategories {
+        var restaurants: [NearbyRankedItem] = []
+        var bars: [NearbyRankedItem] = []
+        var attractions: [NearbyRankedItem] = []
+        var shops: [NearbyRankedItem] = []
+
+        func score(for place: CandidatePlace) -> Double {
+            var value = 0.0
+            if place.openNow == true { value += 0.12 }
+            if place.url != nil { value += 0.06 }
+            if place.phone != nil { value += 0.04 }
+            if let rating = place.rating {
+                value += min(1, rating / 5.0) * 0.6
+            }
+            if let count = place.ratingCount {
+                value += min(1, log10(Double(count) + 1) / 3.0) * 0.18
+            }
+            return min(1, value)
+        }
+
+        func classify(_ place: CandidatePlace) -> PlaceCategory {
+            let haystack = place.rawCategories.joined(separator: " ").lowercased()
+            if haystack.contains("bar") || haystack.contains("brewery") || haystack.contains("pub") {
+                return .bars
+            }
+            if haystack.contains("restaurant") || haystack.contains("cafe") || haystack.contains("bakery") || haystack.contains("food") {
+                return .restaurants
+            }
+            if haystack.contains("store") || haystack.contains("shop") || haystack.contains("market") || haystack.contains("mall") {
+                return .shops
+            }
+            return .attractions
+        }
+
+        func tags(_ place: CandidatePlace) -> [String] {
+            Array(place.rawCategories.map { $0.replacingOccurrences(of: "MKPOICategory", with: "") }
+                .map { $0.replacingOccurrences(of: "([a-z])([A-Z])", with: "$1 $2", options: .regularExpression) }
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+                .prefix(3))
+        }
+
+        for place in candidates {
+            let item = NearbyRankedItem(
+                placeLocalId: place.placeLocalId,
+                score: score(for: place),
+                why: "From MapKit (unranked).",
+                tags: tags(place),
+                bestFor: "a quick stop",
+                cautions: []
+            )
+            switch classify(place) {
+            case .restaurants: restaurants.append(item)
+            case .bars: bars.append(item)
+            case .attractions: attractions.append(item)
+            case .shops: shops.append(item)
+            }
+        }
+
+        restaurants.sort { $0.score > $1.score }
+        bars.sort { $0.score > $1.score }
+        attractions.sort { $0.score > $1.score }
+        shops.sort { $0.score > $1.score }
+
+        return NearbyCategories(restaurants: restaurants, bars: bars, attractions: attractions, shops: shops)
     }
 }
