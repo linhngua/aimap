@@ -3,14 +3,16 @@ import Foundation
 import MapKit
 import SwiftUI
 
+private let defaultBackendBaseURL = "https://map.petetranfab.com"
+
 @MainActor
 final class MapViewModel: ObservableObject {
-    @AppStorage("backend_base_url") var backendBaseURLString: String = "https://map.petetranfab.com"
+    @AppStorage("backend_base_url") var backendBaseURLString: String = defaultBackendBaseURL
     @AppStorage("search_radius_m") var radiusMeters: Double = 800
 
     init() {
         if backendBaseURLString.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            backendBaseURLString = "https://map.petetranfab.com"
+            backendBaseURLString = defaultBackendBaseURL
         }
     }
 
@@ -171,17 +173,19 @@ final class MapViewModel: ObservableObject {
 
     private func makeBackendClient() throws -> BackendClient {
         let raw = backendBaseURLString.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !raw.isEmpty else {
-            throw BackendClientError.invalidURL
-        }
         let normalized: String
-        if raw.lowercased().hasPrefix("http://") || raw.lowercased().hasPrefix("https://") {
-            normalized = raw
+        let input = raw.isEmpty ? defaultBackendBaseURL : raw
+        if input.lowercased().hasPrefix("http://") || input.lowercased().hasPrefix("https://") {
+            normalized = input
         } else {
-            normalized = "https://\(raw)"
+            normalized = "https://\(input)"
         }
         guard let url = URL(string: normalized) else {
-            throw BackendClientError.invalidURL
+            backendBaseURLString = defaultBackendBaseURL
+            guard let fallbackURL = URL(string: defaultBackendBaseURL) else {
+                throw BackendClientError.invalidURL
+            }
+            return BackendClient(configuration: .init(baseURL: fallbackURL))
         }
         return BackendClient(configuration: .init(baseURL: url))
     }

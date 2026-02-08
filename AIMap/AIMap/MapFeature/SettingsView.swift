@@ -1,17 +1,13 @@
 import SwiftUI
 
 struct SettingsView: View {
-    @Binding var backendBaseURL: String
     @Binding var radiusMeters: Double
 
     var body: some View {
         Form {
-            Section("Backend") {
-                TextField("https://map.petetranfab.com", text: $backendBaseURL)
-                    .textInputAutocapitalization(.never)
-                    .keyboardType(.URL)
-                    .autocorrectionDisabled()
-                Text("Stored on-device. Required for LLM grouping.")
+            Section("AI Backend") {
+                LabeledContent("Status", value: "Enabled")
+                Text("Backend is embedded in the app.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }

@@ -15,22 +15,53 @@ function isObject(value) {
 
 function normalizeNearbyItemKeys(item) {
   if (!isObject(item)) return item;
-  const normalized = { ...item };
-  if (normalized.place_local_id === undefined && normalized.placeLocalId !== undefined) {
-    normalized.place_local_id = normalized.placeLocalId;
-    delete normalized.placeLocalId;
+  const place_local_id =
+    typeof item.place_local_id === "string"
+      ? item.place_local_id
+      : typeof item.placeLocalId === "string"
+        ? item.placeLocalId
+        : "";
+
+  let score = item.score;
+  if (typeof score === "string") {
+    const parsed = Number.parseFloat(score);
+    score = Number.isNaN(parsed) ? 0 : parsed;
   }
-  if (normalized.best_for === undefined && normalized.bestFor !== undefined) {
-    normalized.best_for = normalized.bestFor;
-    delete normalized.bestFor;
-  }
-  if (typeof normalized.score === "string") {
-    const score = Number.parseFloat(normalized.score);
-    if (!Number.isNaN(score)) normalized.score = score;
-  }
-  if (typeof normalized.tags === "string") normalized.tags = [normalized.tags];
-  if (typeof normalized.cautions === "string") normalized.cautions = [normalized.cautions];
-  return normalized;
+  if (typeof score !== "number") score = 0;
+
+  const why =
+    typeof item.why === "string"
+      ? item.why
+      : typeof item.reason === "string"
+        ? item.reason
+        : typeof item.explanation === "string"
+          ? item.explanation
+          : "";
+
+  const best_for =
+    typeof item.best_for === "string"
+      ? item.best_for
+      : typeof item.bestFor === "string"
+        ? item.bestFor
+        : typeof item.bestfor === "string"
+          ? item.bestfor
+          : "";
+
+  const tagsValue = item.tags ?? item.tag;
+  const tags = Array.isArray(tagsValue)
+    ? tagsValue.filter((t) => typeof t === "string")
+    : typeof tagsValue === "string"
+      ? [tagsValue]
+      : [];
+
+  const cautionsValue = item.cautions ?? item.caution;
+  const cautions = Array.isArray(cautionsValue)
+    ? cautionsValue.filter((t) => typeof t === "string")
+    : typeof cautionsValue === "string"
+      ? [cautionsValue]
+      : [];
+
+  return { place_local_id, score, why, tags, best_for, cautions };
 }
 
 function normalizeNearbyLLMOutput(input, request) {

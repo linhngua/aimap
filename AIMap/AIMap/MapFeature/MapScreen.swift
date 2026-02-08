@@ -16,18 +16,24 @@ struct MapScreen: View {
                                 } label: {
                                     Image(systemName: "mappin.circle.fill")
                                         .font(.title2)
-                                        .foregroundStyle(.red)
-                                        .shadow(radius: 2)
+                                        .symbolRenderingMode(.palette)
+                                        .foregroundStyle(.cyan, .black.opacity(0.55))
+                                        .shadow(color: .cyan.opacity(0.55), radius: 10)
                                 }
                                 .buttonStyle(.plain)
                                 .accessibilityLabel(place.name)
                             }
                         }
                     }
+                    .mapStyle(.standard(elevation: .realistic))
+                    .tint(.cyan)
                     .mapControls {
                         MapCompass()
                         MapPitchToggle()
                         MapScaleView()
+                    }
+                    .overlay {
+                        FuturisticMapOverlay()
                     }
                     .onTapGesture { location in
                         if let coordinate = proxy.convert(location, from: .local) {
@@ -45,6 +51,7 @@ struct MapScreen: View {
                 .padding(.top, 8)
             }
             .navigationTitle("AI Map")
+            .tint(.cyan)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Button {
@@ -65,7 +72,7 @@ struct MapScreen: View {
             }
             .sheet(isPresented: $viewModel.isShowingSettings) {
                 NavigationStack {
-                    SettingsView(backendBaseURL: $viewModel.backendBaseURLString, radiusMeters: $viewModel.radiusMeters)
+                    SettingsView(radiusMeters: $viewModel.radiusMeters)
                         .navigationTitle("Settings")
                         .toolbar {
                             ToolbarItem(placement: .topBarTrailing) {
