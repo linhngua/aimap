@@ -8,6 +8,7 @@ private let defaultBackendBaseURL = "https://map.petetranfab.com"
 @MainActor
 final class MapViewModel: ObservableObject {
     private static let initialCenter = CLLocationCoordinate2D(latitude: 37.3349, longitude: -122.0090)
+    private static let defaultSpan = MKCoordinateSpan(latitudeDelta: 0.08 / 3.0, longitudeDelta: 0.08 / 3.0)
     private static let tapDebounceNanoseconds: UInt64 = 220_000_000
 
     @AppStorage("backend_base_url") var backendBaseURLString: String = defaultBackendBaseURL
@@ -84,7 +85,7 @@ final class MapViewModel: ObservableObject {
 
     @Published var region: MKCoordinateRegion = MKCoordinateRegion(
         center: initialCenter,
-        span: MKCoordinateSpan(latitudeDelta: 0.08, longitudeDelta: 0.08)
+        span: defaultSpan
     ) {
         didSet {
             lastCameraCenter = region.center
@@ -178,6 +179,48 @@ final class MapViewModel: ObservableObject {
         selectedCategory = category
     }
 
+    func ensureSelectedCategory(in visibleCategories: [PlaceCategory]) {
+        let allowed = visibleCategories.isEmpty ? Array(PlaceCategory.allCases) : visibleCategories
+        guard !allowed.isEmpty else { return }
+
+        if allowed.contains(selectedCategory), (categoryCounts[selectedCategory] ?? 0) > 0 {
+            return
+        }
+
+        if nearbyPayload != nil {
+            let candidates: [(PlaceCategory, Int, Double)] = allowed.map { category in
+                let count = categoryCounts[category] ?? 0
+                let score = rankedItems(for: category).first?.score ?? 0
+                return (category, count, score)
+            }
+            let sorted = candidates.sorted { lhs, rhs in
+                if lhs.1 != rhs.1 { return lhs.1 > rhs.1 }
+                return lhs.2 > rhs.2
+            }
+            if let best = sorted.first, best.1 > 0 {
+                selectedCategory = best.0
+                return
+            }
+
+            // If we have results, but none in visible buckets, fall back to any with items.
+            let allCounts: [(PlaceCategory, Int, Double)] = PlaceCategory.allCases.map { category in
+                let count = categoryCounts[category] ?? 0
+                let score = rankedItems(for: category).first?.score ?? 0
+                return (category, count, score)
+            }
+            let bestAny = allCounts.sorted { lhs, rhs in
+                if lhs.1 != rhs.1 { return lhs.1 > rhs.1 }
+                return lhs.2 > rhs.2
+            }.first
+            if let bestAny, bestAny.1 > 0 {
+                selectedCategory = bestAny.0
+                return
+            }
+        }
+
+        selectedCategory = allowed.first ?? .restaurants
+    }
+
     func selectPlace(_ place: CandidatePlace) {
         selectedPlace = place
         placeDetail = nil
@@ -221,9 +264,17 @@ final class MapViewModel: ObservableObject {
     }
 
     var rankedItemsForSelectedCategory: [NearbyRankedItem] {
+        rankedItems(for: selectedCategory)
+    }
+
+    var visiblePlaces: [CandidatePlace] {
+        places(for: selectedCategory)
+    }
+
+    func rankedItems(for category: PlaceCategory) -> [NearbyRankedItem] {
         guard let categories = nearbyPayload?.categories else { return [] }
         let items: [NearbyRankedItem]
-        switch selectedCategory {
+        switch category {
         case .restaurants: items = categories.restaurants
         case .bars: items = categories.bars
         case .attractions: items = categories.attractions
@@ -232,8 +283,8 @@ final class MapViewModel: ObservableObject {
         return items.sorted { $0.score > $1.score }
     }
 
-    var visiblePlaces: [CandidatePlace] {
-        rankedItemsForSelectedCategory.compactMap { candidatesById[$0.placeLocalId] }
+    func places(for category: PlaceCategory) -> [CandidatePlace] {
+        rankedItems(for: category).compactMap { candidatesById[$0.placeLocalId] }
     }
 
     private func loadPlaceDetail(place: CandidatePlace, bypassCache: Bool) async {
@@ -486,7 +537,7 @@ final class MapViewModel: ObservableObject {
         lastCameraCenter = coordinate
         region = MKCoordinateRegion(
             center: coordinate,
-            span: MKCoordinateSpan(latitudeDelta: 0.08, longitudeDelta: 0.08)
+            span: Self.defaultSpan
         )
 
         startCachePrimerIfNeeded(center: coordinate)
@@ -519,7 +570,7 @@ final class MapViewModel: ObservableObject {
             lastCameraCenter = coordinate
             region = MKCoordinateRegion(
                 center: coordinate,
-                span: MKCoordinateSpan(latitudeDelta: 0.08, longitudeDelta: 0.08)
+                span: Self.defaultSpan
             )
         } catch is CancellationError {
             // ignore

@@ -27,6 +27,10 @@ enum PlaceCategory: String, CaseIterable, Codable, Hashable {
     }
 }
 
+extension PlaceCategory: Identifiable {
+    var id: String { rawValue }
+}
+
 struct CandidatePlace: Codable, Identifiable, Hashable {
     let placeLocalId: String
     let name: String

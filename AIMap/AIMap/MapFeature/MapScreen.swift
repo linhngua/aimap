@@ -5,6 +5,8 @@ struct MapScreen: View {
     @StateObject private var viewModel = MapViewModel()
     @FocusState private var isSearchFocused: Bool
     @State private var locationQuery: String = ""
+    @State private var gridCategory: PlaceCategory?
+    @AppStorage(CategoryPreferences.storageKey) private var visibleCategoriesRaw: String = CategoryPreferences.encode(CategoryPreferences.defaultSelection)
     private let mapStyle: LuxuryMapStyle = .premium
 
     var body: some View {
@@ -36,6 +38,9 @@ struct MapScreen: View {
             }
             .navigationBarTitleDisplayMode(.inline)
             .tint(Color(uiColor: mapStyle.accentColor))
+            .navigationDestination(item: $gridCategory) { category in
+                PlacesGridScreen(viewModel: viewModel, category: category, accentColor: Color(uiColor: mapStyle.accentColor))
+            }
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Button {
@@ -63,7 +68,11 @@ struct MapScreen: View {
             }
             .sheet(isPresented: $viewModel.isShowingSettings) {
                 NavigationStack {
-                    SettingsView(radiusMeters: $viewModel.radiusMeters, isCachePrimerEnabled: $viewModel.isCachePrimerEnabled)
+                    SettingsView(
+                        radiusMeters: $viewModel.radiusMeters,
+                        isCachePrimerEnabled: $viewModel.isCachePrimerEnabled,
+                        visibleCategoriesRaw: $visibleCategoriesRaw
+                    )
                         .navigationTitle("Settings")
                         .toolbar {
                             ToolbarItem(placement: .topBarTrailing) {
@@ -92,6 +101,13 @@ struct MapScreen: View {
         }
         .task {
             viewModel.centerOnUserLocationIfNeeded()
+            viewModel.ensureSelectedCategory(in: visibleCategories)
+        }
+        .onChange(of: visibleCategoriesRaw) { _, _ in
+            viewModel.ensureSelectedCategory(in: visibleCategories)
+        }
+        .onChange(of: viewModel.nearbyPayload) { _, _ in
+            viewModel.ensureSelectedCategory(in: visibleCategories)
         }
     }
 
@@ -137,21 +153,19 @@ struct MapScreen: View {
     private var categoryChips: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 10) {
-                ForEach(PlaceCategory.allCases, id: \.self) { category in
+                ForEach(visibleCategories, id: \.self) { category in
                     let count = viewModel.categoryCounts[category] ?? 0
-                    Button {
-                        viewModel.selectCategory(category)
-                    } label: {
-                        Label("\(category.title) (\(count))", systemImage: category.systemImage)
-                            .font(.subheadline)
-                            .padding(.vertical, 8)
-                            .padding(.horizontal, 12)
-                            .background(
-                                RoundedRectangle(cornerRadius: 16)
-                                    .fill(viewModel.selectedCategory == category ? Color.accentColor.opacity(0.18) : Color(.secondarySystemBackground))
-                            )
-                    }
-                    .buttonStyle(.plain)
+                    CategoryChip(
+                        category: category,
+                        count: count,
+                        isSelected: viewModel.selectedCategory == category,
+                        accent: Color(uiColor: mapStyle.accentColor),
+                        onSelect: { viewModel.selectCategory(category) },
+                        onOpenGrid: {
+                            viewModel.selectCategory(category)
+                            gridCategory = category
+                        }
+                    )
                     .disabled(count == 0)
                 }
             }
@@ -214,6 +228,7 @@ struct MapScreen: View {
                                         Text(place.name)
                                             .font(.headline)
                                         Spacer()
+                                        ratingView(for: place)
                                         Text(String(format: "%.2f", ranked.score))
                                             .font(.caption)
                                             .foregroundStyle(.secondary)
@@ -240,6 +255,29 @@ struct MapScreen: View {
         }
     }
 
+    private var visibleCategories: [PlaceCategory] {
+        CategoryPreferences.normalize(CategoryPreferences.decode(visibleCategoriesRaw))
+    }
+
+    @ViewBuilder
+    private func ratingView(for place: CandidatePlace) -> some View {
+        if let rating = place.rating {
+            HStack(spacing: 4) {
+                Image(systemName: "star.fill")
+                    .font(.caption2)
+                    .foregroundStyle(Color(uiColor: mapStyle.accentColor))
+                Text(String(format: "%.1f", rating))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if let count = place.ratingCount, count > 0 {
+                    Text("(\(count))")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
     private var pins: [LuxuryMapPin] {
         let baseOpacity: CGFloat = viewModel.nearbyAccuracy == .approx ? 0.55 : 1.0
         return viewModel.visiblePlaces.map { place in
@@ -251,6 +289,50 @@ struct MapScreen: View {
                 isHighlighted: viewModel.selectedPlace?.placeLocalId == place.placeLocalId
             )
         }
+    }
+}
+
+private struct CategoryChip: View {
+    let category: PlaceCategory
+    let count: Int
+    let isSelected: Bool
+    let accent: Color
+    let onSelect: () -> Void
+    let onOpenGrid: () -> Void
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Button(action: onOpenGrid) {
+                Image(systemName: category.systemImage)
+                    .font(.subheadline)
+                    .foregroundStyle(accent)
+                    .frame(width: 28, height: 28)
+                    .background(
+                        Circle()
+                            .fill(accent.opacity(isSelected ? 0.22 : 0.14))
+                    )
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Open \(category.title) grid")
+
+            Button(action: onSelect) {
+                Text("\(category.title) (\(count))")
+                    .font(.subheadline)
+                    .foregroundStyle(.primary)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Show \(category.title)")
+        }
+        .padding(.vertical, 8)
+        .padding(.horizontal, 12)
+        .background(
+            RoundedRectangle(cornerRadius: 16)
+                .fill(isSelected ? accent.opacity(0.16) : Color(.secondarySystemBackground))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 16)
+                .stroke(accent.opacity(isSelected ? 0.30 : 0.14), lineWidth: 1)
+        )
     }
 }
 
