@@ -18,6 +18,55 @@ function isString(value) {
   return typeof value === "string";
 }
 
+export function geohashEncode(latitude, longitude, precision = 6) {
+  if (typeof latitude !== "number" || typeof longitude !== "number") return "";
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return "";
+  if (!Number.isInteger(precision) || precision <= 0) return "";
+
+  let evenBit = true;
+  let bit = 0;
+  let ch = 0;
+  let geohash = "";
+
+  let latMin = -90.0;
+  let latMax = 90.0;
+  let lngMin = -180.0;
+  let lngMax = 180.0;
+
+  while (geohash.length < precision) {
+    if (evenBit) {
+      const mid = (lngMin + lngMax) / 2;
+      if (longitude >= mid) {
+        ch = (ch << 1) | 1;
+        lngMin = mid;
+      } else {
+        ch = (ch << 1) | 0;
+        lngMax = mid;
+      }
+    } else {
+      const mid = (latMin + latMax) / 2;
+      if (latitude >= mid) {
+        ch = (ch << 1) | 1;
+        latMin = mid;
+      } else {
+        ch = (ch << 1) | 0;
+        latMax = mid;
+      }
+    }
+
+    evenBit = !evenBit;
+    bit += 1;
+
+    if (bit === 5) {
+      geohash += BASE32[ch];
+      bit = 0;
+      ch = 0;
+    }
+  }
+
+  return geohash;
+}
+
 export function geohashAdjacent(hash, dir) {
   if (!isString(hash) || hash.length === 0) return "";
   const direction = dir.toLowerCase();
@@ -96,4 +145,3 @@ export function haversineDistanceM(a, b) {
   const h = sinDLat * sinDLat + Math.cos(lat1) * Math.cos(lat2) * sinDLng * sinDLng;
   return 2 * R * Math.asin(Math.min(1, Math.sqrt(h)));
 }
-

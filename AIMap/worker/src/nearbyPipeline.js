@@ -37,6 +37,10 @@ function nearbyKey({ cell_id, radius_bucket, categories_key, time_bucket }) {
   return `nearby:${cell_id}:${radius_bucket}:${categories_key}:${time_bucket}`;
 }
 
+function nearbyLatestKey({ cell_id, radius_bucket, categories_key }) {
+  return `nearby_latest:${cell_id}:${radius_bucket}:${categories_key}`;
+}
+
 function clampItems(payload) {
   if (!isObject(payload?.categories)) return payload;
   const categories = {};
@@ -120,6 +124,9 @@ async function getCacheEntry(env, key, cell_id) {
     etag: cached.etag,
     produced_at: typeof cached.produced_at === "number" ? cached.produced_at : 0,
     payload: cached.payload,
+    stored_accuracy: typeof cached.accuracy === "string" ? cached.accuracy : null,
+    stored_source_cell_id: typeof cached.source_cell_id === "string" ? cached.source_cell_id : null,
+    stored_source_distance_m: typeof cached.source_distance_m === "number" ? cached.source_distance_m : null,
   };
 }
 
@@ -153,13 +160,33 @@ export async function handleNearbyCached(request, env) {
     const exact = await getCacheEntry(env, key, payload.cell_id);
     if (exact) {
       const stale = exact.produced_at > 0 ? nowSeconds - exact.produced_at > STALE_AFTER_SECONDS : false;
+      const accuracy = exact.stored_accuracy === "approx" ? "approx" : "exact";
       return jsonResponse(
         cacheResponseEnvelope({
           hit: true,
           stale,
-          accuracy: "exact",
+          accuracy,
+          source_cell_id: accuracy === "approx" ? exact.stored_source_cell_id ?? payload.cell_id : null,
+          source_distance_m: accuracy === "approx" ? exact.stored_source_distance_m : null,
           etag: exact.etag,
           payload: exact.payload,
+        }),
+      );
+    }
+
+    const exactLatestKey = nearbyLatestKey(payload);
+    const exactLatest = await getCacheEntry(env, exactLatestKey, payload.cell_id);
+    if (exactLatest) {
+      const accuracy = exactLatest.stored_accuracy === "approx" ? "approx" : "exact";
+      return jsonResponse(
+        cacheResponseEnvelope({
+          hit: true,
+          stale: true,
+          accuracy,
+          source_cell_id: accuracy === "approx" ? exactLatest.stored_source_cell_id ?? payload.cell_id : null,
+          source_distance_m: accuracy === "approx" ? exactLatest.stored_source_distance_m : null,
+          etag: exactLatest.etag,
+          payload: exactLatest.payload,
         }),
       );
     }
@@ -189,6 +216,28 @@ export async function handleNearbyCached(request, env) {
       );
     }
 
+    const neighborLatestEntries = await Promise.all(
+      neighbors.map(async (cell_id) => {
+        const neighborKey = nearbyLatestKey({ ...payload, cell_id });
+        return await getCacheEntry(env, neighborKey, cell_id);
+      }),
+    );
+
+    const bestNeighborLatest = bestCandidateEntry(payload, neighborLatestEntries);
+    if (bestNeighborLatest) {
+      return jsonResponse(
+        cacheResponseEnvelope({
+          hit: true,
+          stale: true,
+          accuracy: "approx",
+          source_cell_id: bestNeighborLatest.cell_id,
+          source_distance_m: Math.round(bestNeighborLatest.distance_m),
+          etag: bestNeighborLatest.etag,
+          payload: bestNeighborLatest.payload,
+        }),
+      );
+    }
+
     const lowerCell = payload.cell_id.length > 1 ? payload.cell_id.slice(0, -1) : "";
     if (lowerCell) {
       const lowerKey = nearbyKey({ ...payload, cell_id: lowerCell });
@@ -206,6 +255,24 @@ export async function handleNearbyCached(request, env) {
             source_distance_m: dist ? Math.round(dist) : null,
             etag: lower.etag,
             payload: lower.payload,
+          }),
+        );
+      }
+
+      const lowerLatestKey = nearbyLatestKey({ ...payload, cell_id: lowerCell });
+      const lowerLatest = await getCacheEntry(env, lowerLatestKey, lowerCell);
+      if (lowerLatest) {
+        const center = geohashCenter(lowerCell);
+        const dist = center ? haversineDistanceM({ lat: payload.lat, lng: payload.lng }, center) : null;
+        return jsonResponse(
+          cacheResponseEnvelope({
+            hit: true,
+            stale: true,
+            accuracy: "approx",
+            source_cell_id: lowerCell,
+            source_distance_m: dist ? Math.round(dist) : null,
+            etag: lowerLatest.etag,
+            payload: lowerLatest.payload,
           }),
         );
       }
@@ -313,16 +380,23 @@ export async function handleNearbyRefresh(request, env) {
     etag,
     produced_at: nowSeconds,
     payload: resultPayload,
+    accuracy: "exact",
   };
 
   await kvPutJson(env, key, cacheValue, CACHE_TTL_SECONDS);
+  await kvPutJson(env, nearbyLatestKey(payload), cacheValue, CACHE_TTL_SECONDS);
 
   const lowerCell = payload.cell_id.length > 1 ? payload.cell_id.slice(0, -1) : "";
   if (lowerCell) {
     const lowerKey = nearbyKey({ ...payload, cell_id: lowerCell });
     await kvPutJson(env, lowerKey, cacheValue, CACHE_TTL_SECONDS);
+    await kvPutJson(
+      env,
+      nearbyLatestKey({ ...payload, cell_id: lowerCell }),
+      cacheValue,
+      CACHE_TTL_SECONDS,
+    );
   }
 
   return jsonResponse({ status: "ok", etag, payload: resultPayload });
 }
-

@@ -1,12 +1,13 @@
 import { handleAreaFacts, handleNearby, handlePlaceDetail } from "./handlers.js";
 import { handleNearbyCached, handleNearbyRefresh } from "./nearbyPipeline.js";
+import { handleAdmin } from "./admin.js";
 import { errorResponse } from "./utils.js";
 
 function withCors(response) {
   const headers = new Headers(response.headers);
   headers.set("access-control-allow-origin", "*");
-  headers.set("access-control-allow-headers", "content-type, x-bypass-cache");
-  headers.set("access-control-allow-methods", "POST, OPTIONS");
+  headers.set("access-control-allow-headers", "content-type, x-bypass-cache, x-admin-token");
+  headers.set("access-control-allow-methods", "GET, POST, OPTIONS");
   return new Response(response.body, { status: response.status, headers });
 }
 
@@ -17,6 +18,10 @@ export default {
     }
 
     const url = new URL(request.url);
+    if (url.pathname === "/admin" || url.pathname.startsWith("/admin/")) {
+      return withCors(await handleAdmin(request, env));
+    }
+
     if (request.method !== "POST") {
       return withCors(errorResponse("Method not allowed", 405));
     }

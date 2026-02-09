@@ -79,7 +79,7 @@ struct MapScreen: View {
                     isLoading: viewModel.isLoadingPlaceDetail,
                     isLoadingAreaFacts: viewModel.isLoadingAreaFacts,
                     errorMessage: viewModel.placeDetailErrorMessage,
-                    userLocation: viewModel.userLocation,
+                    userLocation: viewModel.userLocation ?? viewModel.lastTappedCoordinate,
                     onRefresh: { viewModel.refreshPlaceDetail() },
                     onSelectNearby: { placeLocalId in
                         if let nearby = viewModel.candidatesById[placeLocalId] {
