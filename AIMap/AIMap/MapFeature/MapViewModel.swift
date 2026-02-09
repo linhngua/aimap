@@ -103,13 +103,19 @@ final class MapViewModel: ObservableObject {
     @Published var isLoadingPlaceDetail: Bool = false
     @Published var placeDetailErrorMessage: String?
 
+    @Published private(set) var areaFacts: [AreaFact] = []
+    @Published var isLoadingAreaFacts: Bool = false
+
     @Published var isShowingSettings: Bool = false
 
     private var placeTask: Task<Void, Never>?
+    private var areaFactsTask: Task<Void, Never>?
     private var locationSearchTask: Task<Void, Never>?
 
     private let mapKitService = MapKitNearbySearchService()
     private let nearbyCache = NearbyCache()
+    private let placeDetailCache = PlaceDetailCache()
+    private let areaFactsCache = AreaFactsCache()
 
     private var tapDebounceTask: Task<Void, Never>?
     private var pipelineTask: Task<Void, Never>?
@@ -161,11 +167,17 @@ final class MapViewModel: ObservableObject {
     func selectPlace(_ place: CandidatePlace) {
         selectedPlace = place
         placeDetail = nil
+        areaFacts = []
         placeDetailErrorMessage = nil
 
         placeTask?.cancel()
         placeTask = Task {
             await loadPlaceDetail(place: place, bypassCache: false)
+        }
+
+        areaFactsTask?.cancel()
+        areaFactsTask = Task {
+            await loadAreaFacts(for: place, bypassCache: false)
         }
     }
 
@@ -176,6 +188,11 @@ final class MapViewModel: ObservableObject {
         placeTask?.cancel()
         placeTask = Task {
             await loadPlaceDetail(place: place, bypassCache: true)
+        }
+
+        areaFactsTask?.cancel()
+        areaFactsTask = Task {
+            await loadAreaFacts(for: place, bypassCache: true)
         }
     }
 
@@ -209,13 +226,178 @@ final class MapViewModel: ObservableObject {
         isLoadingPlaceDetail = true
         defer { isLoadingPlaceDetail = false }
 
+        let placeLocalId = place.placeLocalId
+        let cellId = areaFactsCellId(for: place.coordinate)
+
+        if !bypassCache, let cached = await placeDetailCache.load(placeLocalId: placeLocalId) {
+            var copy = cached
+            if !areaFacts.isEmpty {
+                copy.areaFunFact = areaFacts
+            }
+            placeDetail = copy
+        }
+
+        // Best-effort neighborhood/city/country. Don’t block too long.
+        let names = await withTimeout(seconds: 0.6) {
+            await self.reverseGeocodeContext(for: place.coordinate)
+        } ?? .init(neighborhoodName: nil, city: nil, country: nil)
+
+        // Use cached area facts if we have them; otherwise try cache quickly.
+        let factsForRequest: [AreaFact]
+        if !areaFacts.isEmpty {
+            factsForRequest = areaFacts
+        } else if !bypassCache, let cachedFacts = await areaFactsCache.load(cellId: cellId) {
+            factsForRequest = cachedFacts
+        } else {
+            factsForRequest = []
+        }
+
+        let request = PlaceDetailRequest(
+            place: makePlaceBrief(from: place),
+            reviewSnippets: [],
+            nearbyContextCandidates: makeNearbyContextCandidates(for: place),
+            areaContext: AreaContext(
+                neighborhoodName: names.neighborhoodName,
+                city: names.city,
+                country: names.country,
+                areaFacts: factsForRequest
+            )
+        )
+
         do {
             let client = try makeBackendClient()
-            let request = PlaceDetailRequest(place: place, reviewSnippets: [], firstPartySignals: [:])
-            let detail = try await client.placeDetail(request: request, bypassCache: bypassCache)
+            var detail = try await client.placeDetail(request: request, bypassCache: bypassCache)
+            if !areaFacts.isEmpty {
+                detail.areaFunFact = areaFacts
+            }
             placeDetail = detail
+            await placeDetailCache.save(placeLocalId: placeLocalId, response: detail)
         } catch {
             placeDetailErrorMessage = error.localizedDescription
+        }
+    }
+
+    private func loadAreaFacts(for place: CandidatePlace, bypassCache: Bool) async {
+        isLoadingAreaFacts = true
+        defer { isLoadingAreaFacts = false }
+
+        let cellId = areaFactsCellId(for: place.coordinate)
+
+        if !bypassCache, let cached = await areaFactsCache.load(cellId: cellId) {
+            areaFacts = cached
+            if var detail = placeDetail, detail.placeLocalId == place.placeLocalId, !cached.isEmpty {
+                withAnimation(.easeInOut(duration: 0.18)) {
+                    detail.areaFunFact = cached
+                    placeDetail = detail
+                }
+            }
+        }
+
+        do {
+            let client = try makeBackendClient()
+            let request = AreaFactsRequest(
+                lat: place.lat,
+                lng: place.lng,
+                radiusM: Int(radiusMeters),
+                cellId: cellId
+            )
+            let response = try await client.areaFacts(request: request, bypassCache: bypassCache)
+            areaFacts = response.facts
+            await areaFactsCache.save(cellId: cellId, facts: response.facts)
+
+            if var detail = placeDetail, detail.placeLocalId == place.placeLocalId, !response.facts.isEmpty {
+                withAnimation(.easeInOut(duration: 0.18)) {
+                    detail.areaFunFact = response.facts
+                    placeDetail = detail
+                }
+                await placeDetailCache.save(placeLocalId: place.placeLocalId, response: detail)
+            }
+        } catch {
+            // Keep any cached area facts; do not surface hard errors in the sheet.
+        }
+    }
+
+    // MARK: - Place detail payload helpers
+
+    private struct AreaContextNames {
+        let neighborhoodName: String?
+        let city: String?
+        let country: String?
+    }
+
+    private func areaFactsCellId(for coordinate: CLLocationCoordinate2D) -> String {
+        let bucket = NearbySpatialKey.radiusBucket(for: radiusMeters)
+        let precision = NearbySpatialKey.geohashPrecision(for: bucket)
+        return Geohash.encode(latitude: coordinate.latitude, longitude: coordinate.longitude, precision: precision)
+    }
+
+    private func makePlaceBrief(from place: CandidatePlace) -> PlaceBrief {
+        PlaceBrief(
+            placeLocalId: place.placeLocalId,
+            name: place.name,
+            lat: place.lat,
+            lng: place.lng,
+            addressShort: place.addressShort,
+            primaryCategory: place.normalizedPrimaryCategory,
+            rawCategories: place.rawCategories,
+            urlExists: place.url?.isEmpty == false,
+            phoneExists: place.phone?.isEmpty == false,
+            openNow: place.openNow,
+            hoursSummary: nil,
+            rating: place.rating,
+            ratingCount: place.ratingCount,
+            priceLevel: place.priceLevel
+        )
+    }
+
+    private func makeNearbyContextCandidates(for place: CandidatePlace) -> [NearbyContextCandidate] {
+        let origin = CLLocation(latitude: place.lat, longitude: place.lng)
+        let candidates = lastCandidates
+            .filter { $0.placeLocalId != place.placeLocalId }
+            .map { candidate -> NearbyContextCandidate in
+                let distance = Int(round(origin.distance(from: CLLocation(latitude: candidate.lat, longitude: candidate.lng))))
+                return NearbyContextCandidate(
+                    placeLocalId: candidate.placeLocalId,
+                    name: candidate.name,
+                    primaryCategory: candidate.normalizedPrimaryCategory,
+                    lat: candidate.lat,
+                    lng: candidate.lng,
+                    distanceM: max(0, distance)
+                )
+            }
+            .sorted { $0.distanceM < $1.distanceM }
+        return Array(candidates.prefix(25))
+    }
+
+    private func reverseGeocodeContext(for coordinate: CLLocationCoordinate2D) async -> AreaContextNames {
+        let location = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
+        let geocoder = CLGeocoder()
+        return await withCheckedContinuation { continuation in
+            geocoder.reverseGeocodeLocation(location) { placemarks, _ in
+                let placemark = placemarks?.first
+                continuation.resume(
+                    returning: AreaContextNames(
+                        neighborhoodName: placemark?.subLocality,
+                        city: placemark?.locality,
+                        country: placemark?.country
+                    )
+                )
+            }
+        }
+    }
+
+    private func withTimeout<T>(seconds: Double, operation: @escaping () async -> T) async -> T? {
+        await withTaskGroup(of: T?.self) { group in
+            group.addTask {
+                await operation()
+            }
+            group.addTask {
+                try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+                return nil
+            }
+            let result = await group.next() ?? nil
+            group.cancelAll()
+            return result
         }
     }
 

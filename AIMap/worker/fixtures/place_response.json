@@ -1,19 +1,34 @@
 {
   "place_local_id": "p1",
   "mode": "inference",
-  "summary": "Cafe Uno appears to be a casual cafe/restaurant option near this location. Based on the basic listing info provided, it likely works best for a simple, convenient stop rather than a destination meal.",
-  "highlights": [
-    "Close to the selected map area",
-    "Category suggests cafe/restaurant-style food",
-    "Good fit for a quick, low-friction visit"
+  "headline": "Cafe Uno",
+  "why_worth_it": "A food stop near Cupertino.\nDetails are limited to basic listing metadata.\nNext: City Park · Bar Deux.",
+  "nearby_moves": [
+    {
+      "place_local_id": "p2",
+      "label": "City Park",
+      "reason": "Nearby attraction option (120 m)."
+    },
+    {
+      "place_local_id": "p3",
+      "label": "Bar Deux",
+      "reason": "Nearby bar option (180 m)."
+    },
+    {
+      "place_local_id": "p4",
+      "label": "Shop Trois",
+      "reason": "Nearby shop option (210 m)."
+    }
   ],
-  "cautions": [
-    "This summary is an AI inference from limited metadata",
-    "Confirm hours, menu, and pricing before going"
+  "practical": [
+    "Hours aren’t provided here; verify before you go."
   ],
-  "tips": [
-    "If you have a time constraint, call ahead (if a phone number is available)."
+  "area_fun_fact": [
+    {
+      "fact": "Cupertino is a city in Santa Clara County, California.",
+      "source": "Wikipedia: Cupertino"
+    }
   ],
-  "disclosure": "AI inference: No review snippets or first-party signals were provided, so this sheet is a conservative summary based only on the place metadata."
+  "confidence": "low",
+  "disclosure": "AI inference based only on place metadata and nearby context."
 }
-

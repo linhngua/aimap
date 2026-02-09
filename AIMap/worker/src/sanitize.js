@@ -243,17 +243,7 @@ function excerpt(text, index, length) {
   return text.slice(start, end);
 }
 
-function collectPlaceDetailText(detail) {
-  return [
-    detail.summary,
-    ...(Array.isArray(detail.highlights) ? detail.highlights : []),
-    ...(Array.isArray(detail.cautions) ? detail.cautions : []),
-    ...(Array.isArray(detail.tips) ? detail.tips : []),
-    detail.disclosure,
-  ].filter((t) => typeof t === "string" && t.length > 0);
-}
-
-function findDisallowedReviewLanguage(texts) {
+function findDisallowedLanguage(texts) {
   const patterns = [
     {
       id: "people_say",
@@ -262,19 +252,20 @@ function findDisallowedReviewLanguage(texts) {
     { id: "reviews_say", regex: /\breviews?\s+(say|mention|note|report|often|frequently)\b/i },
     { id: "according_to_reviews", regex: /\baccording to (the )?reviews?\b/i },
     { id: "reviewers", regex: /\breviewers?\b/i },
+    { id: "quotes", regex: /[“”"]/ },
+    {
+      id: "menu_items",
+      regex:
+        /\b(signature|must[-\s]?try|try the|order the|dish|cocktail|menu|tasting|chef['’]s|wine list)\b/i,
+    },
+    {
+      id: "overclaim",
+      regex: /\b(best|famous|iconic|legendary|top[-\s]?rated|award[-\s]?winning|michelin|popular|beloved)\b/i,
+    },
   ];
 
   const violations = [];
   for (const text of texts) {
-    const quoteIndex = text.search(/[“”"]/);
-    if (quoteIndex !== -1) {
-      violations.push({
-        id: "quotes",
-        excerpt: excerpt(text, quoteIndex, 1),
-      });
-      continue;
-    }
-
     for (const pattern of patterns) {
       const match = text.match(pattern.regex);
       if (match && match.index !== undefined) {
@@ -291,80 +282,123 @@ function findDisallowedReviewLanguage(texts) {
 
 function expectedPlaceMode(payload) {
   const hasReviewSnippets = Array.isArray(payload.review_snippets) && payload.review_snippets.length > 0;
-  const hasFirstPartySignals =
-    payload.first_party_signals && Object.keys(payload.first_party_signals).length > 0;
-  return hasReviewSnippets ? "signals" : hasFirstPartySignals ? "first_party" : "inference";
-}
-
-function priceLevelSymbols(priceLevel) {
-  if (!Number.isInteger(priceLevel) || priceLevel <= 0) return "";
-  return "$".repeat(Math.min(4, priceLevel));
+  return hasReviewSnippets ? "signals" : "inference";
 }
 
 function buildPlaceDisclosure(mode) {
   if (mode === "signals") {
-    return "AI summary based only on the provided metadata and review snippets (no invented reviews).";
+    return "Summary includes provided review snippets.";
   }
-  if (mode === "first_party") {
-    return "AI summary based only on the provided metadata and first-party signals.";
-  }
-  return "AI inference based only on the provided place metadata. No review snippets were provided.";
+  return "AI inference based only on place metadata and nearby context.";
 }
 
-function buildSafePlaceDetail(payload) {
+function normalizePrimaryCategory(value) {
+  const s = typeof value === "string" ? value.toLowerCase() : "";
+  if (s.includes("bar")) return "bar";
+  if (s.includes("rest") || s.includes("food") || s.includes("cafe")) return "restaurant";
+  if (s.includes("shop") || s.includes("store") || s.includes("market")) return "shop";
+  if (s.includes("attract") || s.includes("landmark") || s.includes("museum") || s.includes("park")) return "attraction";
+  return s || "attraction";
+}
+
+function confidenceFromPayload(payload) {
+  const place = payload.place ?? {};
+  const hasRatingCount = Number.isInteger(place.rating_count) && place.rating_count > 0;
+  const hasContact = place.url_exists === true || place.phone_exists === true;
+  const hasCategories = Array.isArray(place.raw_categories) && place.raw_categories.length > 0;
+  const hasHours = place.open_now === true || place.open_now === false || typeof place.hours_summary === "string";
+
+  const score = [hasRatingCount, hasContact, hasCategories, hasHours].filter(Boolean).length;
+  if (score >= 4) return "high";
+  if (score >= 2) return "medium";
+  return "low";
+}
+
+function areaFunFactsFromPayload(payload) {
+  const facts = Array.isArray(payload?.area_context?.area_facts) ? payload.area_context.area_facts : [];
+  const placeName = typeof payload?.place?.name === "string" ? payload.place.name.toLowerCase() : "";
+  const out = [];
+  for (const f of facts) {
+    const fact = typeof f.fact === "string" ? f.fact.trim() : "";
+    const source = typeof f.source === "string" ? f.source.trim() : "";
+    if (!fact || !source) continue;
+    if (placeName.length > 4 && fact.toLowerCase().includes(placeName)) {
+      continue;
+    }
+    out.push({ fact: stripQuotes(fact), source: stripQuotes(source) });
+    if (out.length >= 2) break;
+  }
+  return out;
+}
+
+function buildNearbyMoves(payload) {
+  const placeId = payload?.place?.place_local_id;
+  const primary = normalizePrimaryCategory(payload?.place?.primary_category);
+  const candidates = Array.isArray(payload?.nearby_context_candidates) ? payload.nearby_context_candidates : [];
+  const filtered = candidates
+    .filter((c) => isObject(c) && typeof c.place_local_id === "string" && c.place_local_id !== placeId)
+    .map((c) => ({
+      place_local_id: c.place_local_id,
+      name: coerceString(c.name, c.place_local_id),
+      primary_category: normalizePrimaryCategory(c.primary_category),
+      distance_m: Number.isInteger(c.distance_m) ? c.distance_m : Math.round(coerceNumber(c.distance_m, 0)),
+    }))
+    .filter((c) => c.distance_m >= 0)
+    .sort((a, b) => a.distance_m - b.distance_m);
+
+  const desiredByType = {
+    restaurant: ["attraction", "bar", "shop"],
+    bar: ["restaurant", "bar", "attraction"],
+    attraction: ["restaurant", "bar", "shop"],
+    shop: ["attraction", "restaurant", "bar"],
+  };
+  const desired = desiredByType[primary] ?? desiredByType.attraction;
+
+  const chosen = [];
+  const used = new Set();
+
+  for (const wanted of desired) {
+    const pick = filtered.find((c) => c.primary_category === wanted && !used.has(c.place_local_id));
+    if (pick) {
+      used.add(pick.place_local_id);
+      chosen.push(pick);
+    }
+  }
+
+  for (const c of filtered) {
+    if (chosen.length >= 3) break;
+    if (used.has(c.place_local_id)) continue;
+    used.add(c.place_local_id);
+    chosen.push(c);
+  }
+
+  return chosen.slice(0, 3).map((c) => ({
+    place_local_id: c.place_local_id,
+    label: c.name,
+    reason: `Nearby ${c.primary_category} option (${c.distance_m} m).`,
+  }));
+}
+
+function buildPractical(payload) {
   const place = payload.place;
   const mode = expectedPlaceMode(payload);
 
-  const categories = (Array.isArray(place.raw_categories) ? place.raw_categories : [])
-    .map(prettifyRawCategory)
-    .filter((t) => t.length > 0);
+  const practical = [];
+  if (place.url_exists === true) practical.push("Check the website for current hours/menu/details.");
+  if (place.phone_exists === true) practical.push("Call ahead if hours or availability matter.");
 
-  const highlights = [];
-  if (categories.length > 0) highlights.push(`Category: ${categories.slice(0, 2).join(", ")}`);
-  if (typeof place.address_short === "string" && place.address_short.length > 0) {
-    highlights.push(`Near: ${place.address_short}`);
-  }
-  if (typeof place.rating === "number") {
-    const count = typeof place.rating_count === "number" ? ` (${place.rating_count})` : "";
-    highlights.push(`Rating: ${place.rating.toFixed(1)}${count}`);
-  }
-  const price = priceLevelSymbols(place.price_level);
-  if (price) highlights.push(`Price: ${price}`);
-  if (place.open_now === true) highlights.push("Open now");
-  if (place.open_now === false) highlights.push("Currently closed");
-  if (typeof place.url === "string" && place.url.length > 0) highlights.push("Website available");
-  if (typeof place.phone === "string" && place.phone.length > 0) highlights.push("Phone available");
-
-  const normalizedHighlights = highlights.slice(0, 3);
-  while (normalizedHighlights.length < 3) {
-    normalizedHighlights.push("Details based on MapKit metadata.");
+  if (place.open_now === null && place.hours_summary === null) {
+    practical.push("Hours aren’t provided here; verify before you go.");
+  } else if (place.open_now === false) {
+    practical.push("Marked closed right now; verify hours before heading over.");
   }
 
-  const cautions =
-    mode === "inference"
-      ? ["No review snippets provided; summary is an AI inference.", "Verify hours and details on the official listing."]
-      : ["Verify hours and details on the official listing."];
-
-  const tips = [];
-  if (typeof place.url === "string" && place.url.length > 0) tips.push("Open the website to confirm hours/menu/prices.");
-  if (typeof place.phone === "string" && place.phone.length > 0) tips.push("Call ahead if hours or availability matter.");
-  tips.push("Use directions to verify the entrance and parking.");
-
-  const summaryParts = [place.name];
-  if (typeof place.address_short === "string" && place.address_short.length > 0) {
-    summaryParts.push(`near ${place.address_short}`);
+  const ratingCount = Number.isInteger(place.rating_count) ? place.rating_count : 0;
+  if (mode === "inference" && ratingCount >= 500) {
+    practical.push("Likely busier at peak times (inference).");
   }
-  const summary = stripQuotes(summaryParts.join(" "));
 
-  return {
-    place_local_id: place.place_local_id,
-    mode,
-    summary,
-    highlights: normalizedHighlights.map(stripQuotes),
-    cautions: cautions.map(stripQuotes).slice(0, 2),
-    tips: tips.map(stripQuotes).slice(0, 3),
-    disclosure: buildPlaceDisclosure(mode),
-  };
+  return practical.map(stripQuotes).slice(0, 3);
 }
 
 export function sanitizePlaceDetailResponse(raw, payload) {
@@ -377,41 +411,81 @@ export function sanitizePlaceDetailResponse(raw, payload) {
   const expectedMode = expectedPlaceMode(payload);
   const root = unwrapLLMObject(raw) ?? {};
 
-  const summary = coerceString(root.summary ?? root.overview ?? root.description, "").trim();
-  const highlights = coerceStringArray(root.highlights ?? root.highlight ?? root.pros ?? root.bullets);
-  const cautions = coerceStringArray(root.cautions ?? root.caution ?? root.cons ?? root.warnings);
-  const tips = coerceStringArray(root.tips ?? root.tip ?? root.suggestions);
-  const disclosure = coerceString(root.disclosure, "").trim();
+  const headline = coerceString(root.headline ?? root.title ?? root.headline_text, "").trim();
+  const whyWorthIt = coerceString(root.why_worth_it ?? root.whyWorthIt ?? root.why, "").trim();
 
-  let response = {
-    place_local_id: payload.place.place_local_id,
-    mode: expectedMode,
-    summary: stripQuotes(summary),
-    highlights: highlights.map(stripQuotes),
-    cautions: cautions.map(stripQuotes),
-    tips: tips.map(stripQuotes),
-    disclosure: stripQuotes(disclosure.length > 0 ? disclosure : buildPlaceDisclosure(expectedMode)),
-  };
+  const disclosure = buildPlaceDisclosure(expectedMode);
+  const confidence = confidenceFromPayload(payload);
+  const nearby_moves = buildNearbyMoves(payload);
+  const practical = buildPractical(payload);
+  const area_fun_fact = areaFunFactsFromPayload(payload);
 
-  if (response.summary.length === 0 || response.highlights.length === 0) {
+  let safeHeadline =
+    headline.length > 0 && headline.length <= 80 ? stripQuotes(headline) : stripQuotes(payload.place.name);
+
+  let safeWhy = stripQuotes(whyWorthIt);
+  if (safeWhy.length === 0) {
     meta.used_fallback = true;
-    response = buildSafePlaceDetail(payload);
-    return { response, meta };
   }
 
-  if (response.highlights.length < 1) response.highlights = buildSafePlaceDetail(payload).highlights;
-  if (response.cautions.length < 1) response.cautions = buildSafePlaceDetail(payload).cautions;
-  if (response.tips.length < 1) response.tips = buildSafePlaceDetail(payload).tips;
-  if (response.disclosure.length === 0) response.disclosure = buildPlaceDisclosure(expectedMode);
-
+  const textsToCheck = [safeHeadline, safeWhy].filter((t) => typeof t === "string" && t.length > 0);
   if (expectedMode === "inference") {
-    const violations = findDisallowedReviewLanguage(collectPlaceDetailText(response));
+    const violations = findDisallowedLanguage(textsToCheck);
     if (violations.length > 0) {
       meta.used_fallback = true;
       meta.disallowed_review_language = violations;
-      response = buildSafePlaceDetail(payload);
+      safeHeadline = stripQuotes(payload.place.name);
+      safeWhy = "";
     }
   }
+
+  if (safeWhy.length === 0) {
+    const primary = normalizePrimaryCategory(payload.place.primary_category);
+    const areaParts = [
+      payload.area_context?.neighborhood_name,
+      payload.area_context?.city,
+      payload.area_context?.country,
+    ].filter((x) => typeof x === "string" && x.length > 0);
+    const area = areaParts.length > 0 ? areaParts[0] : payload.place.address_short || "this area";
+
+    const line1 =
+      primary === "restaurant"
+        ? `A food stop near ${area}.`
+        : primary === "bar"
+          ? `A drink stop near ${area}.`
+          : primary === "shop"
+            ? `A shop to browse near ${area}.`
+            : `A nearby point of interest near ${area}.`;
+    const line2 = payload.place.url_exists
+      ? "Website available for current hours/details."
+      : payload.place.phone_exists
+        ? "Phone available if you need to confirm details."
+        : "Details are limited to basic listing metadata.";
+    const next = nearby_moves.map((m) => m.label).slice(0, 2).join(" · ");
+    const line3 = next ? `Next: ${next}.` : "";
+
+    safeWhy = [line1, line2, line3].filter((l) => l.length > 0).join("\n");
+  }
+
+  // Ensure 2–3 short lines.
+  const lines = safeWhy
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0)
+    .slice(0, 3);
+  while (lines.length < 2) lines.push("Check the listing for up-to-date details.");
+
+  const response = {
+    place_local_id: payload.place.place_local_id,
+    mode: expectedMode,
+    headline: safeHeadline,
+    why_worth_it: lines.join("\n"),
+    nearby_moves,
+    practical,
+    area_fun_fact,
+    confidence,
+    disclosure,
+  };
 
   return { response, meta };
 }
@@ -446,4 +520,3 @@ export function parseJsonLoose(text) {
 
   return null;
 }
-

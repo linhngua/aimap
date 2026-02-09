@@ -102,25 +102,112 @@ struct ReviewSnippet: Codable, Hashable {
     let text: String
 }
 
-struct PlaceDetailRequest: Codable {
-    let place: CandidatePlace
-    let reviewSnippets: [ReviewSnippet]
-    let firstPartySignals: [String: String]
-}
-
 enum PlaceDetailMode: String, Codable, Hashable {
     case signals
     case inference
-    case firstParty = "first_party"
+}
+
+enum PlaceDetailConfidence: String, Codable, Hashable {
+    case low
+    case medium
+    case high
+}
+
+struct AreaFact: Codable, Hashable, Identifiable {
+    let fact: String
+    let source: String
+
+    var id: String { "\(fact)|\(source)" }
+}
+
+struct AreaContext: Codable, Hashable {
+    let neighborhoodName: String?
+    let city: String?
+    let country: String?
+    let areaFacts: [AreaFact]
+}
+
+struct PlaceBrief: Codable, Hashable {
+    let placeLocalId: String
+    let name: String
+    let lat: Double
+    let lng: Double
+    let addressShort: String
+    let primaryCategory: String
+    let rawCategories: [String]
+    let urlExists: Bool
+    let phoneExists: Bool
+    let openNow: Bool?
+    let hoursSummary: String?
+    let rating: Double?
+    let ratingCount: Int?
+    let priceLevel: Int?
+}
+
+struct NearbyContextCandidate: Codable, Identifiable, Hashable {
+    let placeLocalId: String
+    let name: String
+    let primaryCategory: String
+    let lat: Double
+    let lng: Double
+    let distanceM: Int
+
+    var id: String { placeLocalId }
+}
+
+struct PlaceDetailRequest: Codable {
+    let place: PlaceBrief
+    let reviewSnippets: [ReviewSnippet]
+    let nearbyContextCandidates: [NearbyContextCandidate]
+    let areaContext: AreaContext
+}
+
+struct NearbyMove: Codable, Identifiable, Hashable {
+    let placeLocalId: String
+    let label: String
+    let reason: String
+
+    var id: String { placeLocalId }
 }
 
 struct PlaceDetailResponse: Codable, Hashable {
     let placeLocalId: String
     let mode: PlaceDetailMode
-    let summary: String
-    let highlights: [String]
-    let cautions: [String]
-    let tips: [String]
+    let headline: String
+    let whyWorthIt: String
+    let nearbyMoves: [NearbyMove]
+    let practical: [String]
+    var areaFunFact: [AreaFact]
+    let confidence: PlaceDetailConfidence
     let disclosure: String
 }
 
+struct AreaFactsRequest: Codable, Hashable {
+    let lat: Double
+    let lng: Double
+    let radiusM: Int
+    let cellId: String
+}
+
+struct AreaFactsResponse: Codable, Hashable {
+    let facts: [AreaFact]
+}
+
+extension CandidatePlace {
+    var normalizedPrimaryCategory: String {
+        let categories = rawCategories.joined(separator: " ").lowercased()
+        let nameLowercased = name.lowercased()
+        let haystack = "\(categories) \(nameLowercased)"
+
+        if haystack.contains("bar") || haystack.contains("pub") || haystack.contains("brewery") || haystack.contains("nightlife") {
+            return "bar"
+        }
+        if haystack.contains("restaurant") || haystack.contains("cafe") || haystack.contains("bakery") || haystack.contains("food") || haystack.contains("coffee") {
+            return "restaurant"
+        }
+        if haystack.contains("store") || haystack.contains("shop") || haystack.contains("market") || haystack.contains("mall") || haystack.contains("boutique") {
+            return "shop"
+        }
+        return "attraction"
+    }
+}

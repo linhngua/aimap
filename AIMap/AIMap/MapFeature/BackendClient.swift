@@ -70,9 +70,18 @@ actor BackendClient {
 
     func placeDetail(request: PlaceDetailRequest, bypassCache: Bool) async throws -> PlaceDetailResponse {
         try await post(
-            path: "/v1/map/place",
+            path: "/v1/map/place_detail",
             body: request,
             responseType: PlaceDetailResponse.self,
+            bypassCache: bypassCache
+        )
+    }
+
+    func areaFacts(request: AreaFactsRequest, bypassCache: Bool) async throws -> AreaFactsResponse {
+        try await post(
+            path: "/v1/map/area_facts",
+            body: request,
+            responseType: AreaFactsResponse.self,
             bypassCache: bypassCache
         )
     }

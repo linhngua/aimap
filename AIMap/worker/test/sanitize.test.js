@@ -72,10 +72,14 @@ test("sanitizePlaceDetailResponse strips extra keys + enforces inference safety"
     name: "extra-top-level-field",
     place_local_id: "WRONG",
     mode: "signals",
-    summary: "People say it's amazing.",
-    highlights: "A highlight as a string",
-    cautions: ["Might be busy"],
-    tips: "Tip as a string",
+    headline: "People say it's amazing.",
+    why_worth_it: "Must-try cocktails.",
+    nearby_moves: [
+      { place_local_id: "hallucinated_id", label: "Fake", reason: "Should be filtered." },
+    ],
+    practical: ["Do a thing."],
+    area_fun_fact: [{ fact: "Made up.", source: "None" }],
+    confidence: "high",
     disclosure: "",
   };
 
@@ -84,6 +88,6 @@ test("sanitizePlaceDetailResponse strips extra keys + enforces inference safety"
   assert.equal(response.place_local_id, req.place.place_local_id);
   assert.equal(response.mode, "inference");
   assert.equal(meta.used_fallback, true);
-  assert.ok(!response.summary.toLowerCase().includes("people say"));
+  assert.ok(!response.headline.toLowerCase().includes("people say"));
+  assert.ok(!response.why_worth_it.toLowerCase().includes("must-try"));
 });
-

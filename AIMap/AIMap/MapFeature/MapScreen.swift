@@ -77,8 +77,15 @@ struct MapScreen: View {
                     place: place,
                     detail: viewModel.placeDetail,
                     isLoading: viewModel.isLoadingPlaceDetail,
+                    isLoadingAreaFacts: viewModel.isLoadingAreaFacts,
                     errorMessage: viewModel.placeDetailErrorMessage,
-                    onRefresh: { viewModel.refreshPlaceDetail() }
+                    userLocation: viewModel.userLocation,
+                    onRefresh: { viewModel.refreshPlaceDetail() },
+                    onSelectNearby: { placeLocalId in
+                        if let nearby = viewModel.candidatesById[placeLocalId] {
+                            viewModel.selectPlace(nearby)
+                        }
+                    }
                 )
                 .presentationDetents([.medium, .large])
             }

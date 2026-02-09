@@ -1,4 +1,4 @@
-import { handleNearby, handlePlace } from "./handlers.js";
+import { handleAreaFacts, handleNearby, handlePlaceDetail } from "./handlers.js";
 import { handleNearbyCached, handleNearbyRefresh } from "./nearbyPipeline.js";
 import { errorResponse } from "./utils.js";
 
@@ -25,9 +25,12 @@ export default {
       if (!env.OPENAI_API_KEY) return withCors(errorResponse("Missing OPENAI_API_KEY", 500));
       return withCors(await handleNearby(request, env));
     }
-    if (url.pathname === "/v1/map/place") {
+    if (url.pathname === "/v1/map/place_detail" || url.pathname === "/v1/map/place") {
       if (!env.OPENAI_API_KEY) return withCors(errorResponse("Missing OPENAI_API_KEY", 500));
-      return withCors(await handlePlace(request, env));
+      return withCors(await handlePlaceDetail(request, env));
+    }
+    if (url.pathname === "/v1/map/area_facts") {
+      return withCors(await handleAreaFacts(request, env));
     }
     if (url.pathname === "/v1/map/nearby_cached") {
       return withCors(await handleNearbyCached(request, env));

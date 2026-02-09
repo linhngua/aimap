@@ -5,15 +5,52 @@
     "lat": 37.3351,
     "lng": -122.0092,
     "address_short": "1 Infinite Loop Cupertino",
+    "primary_category": "restaurant",
     "raw_categories": ["cafe", "restaurant"],
-    "url": null,
-    "phone": null,
+    "url_exists": false,
+    "phone_exists": false,
+    "open_now": null,
+    "hours_summary": null,
     "rating": null,
     "rating_count": null,
-    "price_level": null,
-    "open_now": null
+    "price_level": null
   },
   "review_snippets": [],
-  "first_party_signals": {}
+  "nearby_context_candidates": [
+    {
+      "place_local_id": "p2",
+      "name": "City Park",
+      "primary_category": "attraction",
+      "lat": 37.3349,
+      "lng": -122.0089,
+      "distance_m": 120
+    },
+    {
+      "place_local_id": "p3",
+      "name": "Bar Deux",
+      "primary_category": "bar",
+      "lat": 37.3354,
+      "lng": -122.0090,
+      "distance_m": 180
+    },
+    {
+      "place_local_id": "p4",
+      "name": "Shop Trois",
+      "primary_category": "shop",
+      "lat": 37.3350,
+      "lng": -122.0096,
+      "distance_m": 210
+    }
+  ],
+  "area_context": {
+    "neighborhood_name": "Cupertino",
+    "city": "Cupertino",
+    "country": "United States",
+    "area_facts": [
+      {
+        "fact": "Cupertino is a city in Santa Clara County, California.",
+        "source": "Wikipedia: Cupertino"
+      }
+    ]
+  }
 }
-
