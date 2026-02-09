@@ -2,6 +2,7 @@ import SwiftUI
 
 struct SettingsView: View {
     @Binding var radiusMeters: Double
+    @Binding var isCachePrimerEnabled: Bool
 
     var body: some View {
         Form {
@@ -24,6 +25,13 @@ struct SettingsView: View {
                 }
 
                 Text("Radius: \(Int(radiusMeters)) meters")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("Cache Primer") {
+                Toggle("Prime cache in background", isOn: $isCachePrimerEnabled)
+                Text("Warms nearby results around your current location while the app is open.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }

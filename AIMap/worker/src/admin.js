@@ -17,11 +17,11 @@ function isObject(value) {
 }
 
 function requireAdminToken(request, env) {
-  const expected = env?.ADMIN_TOKEN;
-  if (typeof expected !== "string" || expected.length < 12) {
-    return { ok: false, response: errorResponse("Admin is disabled (set ADMIN_TOKEN).", 404) };
+  const expected = typeof env?.ADMIN_TOKEN === "string" ? env.ADMIN_TOKEN.trim() : "";
+  if (expected.length === 0) {
+    return { ok: false, response: errorResponse("Admin is disabled (set non-empty ADMIN_TOKEN).", 404) };
   }
-  const provided = request.headers.get("x-admin-token");
+  const provided = (request.headers.get("x-admin-token") ?? "").trim();
   if (provided !== expected) {
     return { ok: false, response: errorResponse("Unauthorized", 401) };
   }
@@ -263,9 +263,8 @@ function adminHtml() {
       }
 
       const map = L.map("map", { zoomControl: true }).setView([37.3349, -122.0090], 13);
-      L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
-        attribution: '&copy; OpenStreetMap contributors &copy; CARTO',
-        subdomains: "abcd",
+      L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+        attribution: '&copy; OpenStreetMap contributors',
         maxZoom: 19
       }).addTo(map);
 

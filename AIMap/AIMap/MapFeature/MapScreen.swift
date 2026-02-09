@@ -63,7 +63,7 @@ struct MapScreen: View {
             }
             .sheet(isPresented: $viewModel.isShowingSettings) {
                 NavigationStack {
-                    SettingsView(radiusMeters: $viewModel.radiusMeters)
+                    SettingsView(radiusMeters: $viewModel.radiusMeters, isCachePrimerEnabled: $viewModel.isCachePrimerEnabled)
                         .navigationTitle("Settings")
                         .toolbar {
                             ToolbarItem(placement: .topBarTrailing) {

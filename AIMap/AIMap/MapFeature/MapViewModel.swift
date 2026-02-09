@@ -12,6 +12,17 @@ final class MapViewModel: ObservableObject {
 
     @AppStorage("backend_base_url") var backendBaseURLString: String = defaultBackendBaseURL
     @AppStorage("search_radius_m") var radiusMeters: Double = 800
+    @AppStorage("cache_primer_enabled") var isCachePrimerEnabled: Bool = true {
+        didSet {
+            if !isCachePrimerEnabled {
+                cachePrimerTask?.cancel()
+                return
+            }
+            if let userLocation, !hasRunCachePrimer {
+                startCachePrimerIfNeeded(center: userLocation)
+            }
+        }
+    }
 
     private final class LocationDelegate: NSObject, CLLocationManagerDelegate {
         let onAuthorizationChanged: (CLAuthorizationStatus) -> Void
@@ -123,6 +134,9 @@ final class MapViewModel: ObservableObject {
 
     private var lastSpatialKey: NearbySpatialKey?
     private var lastCandidates: [CandidatePlace] = []
+
+    private var cachePrimerTask: Task<Void, Never>?
+    private var hasRunCachePrimer: Bool = false
 
     func centerOnUserLocationIfNeeded() {
         guard !hasCenteredOnUserLocation else { return }
@@ -474,6 +488,8 @@ final class MapViewModel: ObservableObject {
             center: coordinate,
             span: MKCoordinateSpan(latitudeDelta: 0.08, longitudeDelta: 0.08)
         )
+
+        startCachePrimerIfNeeded(center: coordinate)
     }
 
     private func handleLocationError(_ error: Error) {
@@ -509,6 +525,24 @@ final class MapViewModel: ObservableObject {
             // ignore
         } catch {
             locationSearchErrorMessage = "Search failed: \(error.localizedDescription)"
+        }
+    }
+
+    private func startCachePrimerIfNeeded(center: CLLocationCoordinate2D) {
+        guard isCachePrimerEnabled else { return }
+        guard !hasRunCachePrimer else { return }
+        hasRunCachePrimer = true
+
+        cachePrimerTask?.cancel()
+
+        let radiusSnapshot = radiusMeters
+        let cache = nearbyCache
+        let mapKit = mapKitService
+        let client = try? makeBackendClient()
+        let primer = NearbyCachePrimer(nearbyCache: cache, mapKitService: mapKit, backendClient: client)
+
+        cachePrimerTask = Task.detached(priority: .background) {
+            await primer.primeAround(center: center, radiusMeters: radiusSnapshot)
         }
     }
 
