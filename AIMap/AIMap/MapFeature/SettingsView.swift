@@ -5,9 +5,9 @@ struct SettingsView: View {
     @Binding var isCachePrimerEnabled: Bool
     @Binding var visibleCategoriesRaw: String
 
-    @State private var slot1: PlaceCategory = .restaurants
-    @State private var slot2: PlaceCategory = .bars
-    @State private var slot3: PlaceCategory = .attractions
+    @State private var slot1: POICategory = .restaurants
+    @State private var slot2: POICategory = .cafesCoffee
+    @State private var slot3: POICategory = .barsPubs
 
     var body: some View {
         Form {
@@ -80,15 +80,15 @@ struct SettingsView: View {
         .onChange(of: slot3) { _, _ in persistSlots() }
     }
 
-    private var normalizedSlots: [PlaceCategory] {
+    private var normalizedSlots: [POICategory] {
         CategoryPreferences.normalize([slot1, slot2, slot3])
     }
 
-    private func applySlots(_ categories: [PlaceCategory]) {
+    private func applySlots(_ categories: [POICategory]) {
         let normalized = CategoryPreferences.normalize(categories)
         slot1 = normalized[safe: 0] ?? CategoryPreferences.defaultSelection[safe: 0] ?? .restaurants
-        slot2 = normalized[safe: 1] ?? CategoryPreferences.defaultSelection[safe: 1] ?? .bars
-        slot3 = normalized[safe: 2] ?? CategoryPreferences.defaultSelection[safe: 2] ?? .attractions
+        slot2 = normalized[safe: 1] ?? CategoryPreferences.defaultSelection[safe: 1] ?? .cafesCoffee
+        slot3 = normalized[safe: 2] ?? CategoryPreferences.defaultSelection[safe: 2] ?? .barsPubs
     }
 
     private func persistSlots() {

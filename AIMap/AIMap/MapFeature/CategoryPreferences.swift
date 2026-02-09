@@ -5,36 +5,36 @@ enum CategoryPreferences {
     static let maxAvailableCategories = 20
     static let displayedChipCount = 3
 
-    static var availableCategories: [PlaceCategory] {
-        Array(PlaceCategory.allCases.prefix(maxAvailableCategories))
+    static var availableCategories: [POICategory] {
+        Array(POICategory.allCases.prefix(maxAvailableCategories))
     }
 
-    static var defaultSelection: [PlaceCategory] {
+    static var defaultSelection: [POICategory] {
         normalize(Array(availableCategories.prefix(displayedChipCount)))
     }
 
-    static func decode(_ raw: String) -> [PlaceCategory] {
+    static func decode(_ raw: String) -> [POICategory] {
         let parts = raw
             .split(separator: ",")
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
 
-        var out: [PlaceCategory] = []
+        var out: [POICategory] = []
         for part in parts {
-            guard let category = PlaceCategory(rawValue: part) else { continue }
+            guard let category = POICategory(rawValue: part) else { continue }
             if out.contains(category) { continue }
             out.append(category)
         }
         return out
     }
 
-    static func encode(_ categories: [PlaceCategory]) -> String {
+    static func encode(_ categories: [POICategory]) -> String {
         normalize(categories).map(\.rawValue).joined(separator: ",")
     }
 
-    static func normalize(_ categories: [PlaceCategory]) -> [PlaceCategory] {
+    static func normalize(_ categories: [POICategory]) -> [POICategory] {
         let available = availableCategories
-        var unique: [PlaceCategory] = []
+        var unique: [POICategory] = []
         for category in categories {
             guard available.contains(category) else { continue }
             if unique.contains(category) { continue }
@@ -49,4 +49,3 @@ enum CategoryPreferences {
         return unique
     }
 }
-

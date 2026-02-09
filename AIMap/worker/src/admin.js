@@ -19,7 +19,10 @@ function isObject(value) {
 function requireAdminToken(request, env) {
   const expected = typeof env?.ADMIN_TOKEN === "string" ? env.ADMIN_TOKEN.trim() : "";
   if (expected.length === 0) {
-    return { ok: false, response: errorResponse("Admin is disabled (set non-empty ADMIN_TOKEN).", 404) };
+    return {
+      ok: false,
+      response: errorResponse("Admin is disabled (set non-empty ADMIN_TOKEN in Worker environment variables).", 404),
+    };
   }
   const provided = (request.headers.get("x-admin-token") ?? "").trim();
   if (provided !== expected) {
@@ -117,7 +120,8 @@ function adminHtml() {
       button.primary { background: rgba(212,194,140,0.14); border-color: rgba(212,194,140,0.35); }
       button.danger { background: rgba(214,84,84,0.14); border-color: rgba(214,84,84,0.35); }
       main { display: grid; grid-template-columns: 1fr 360px; gap: 0; height: calc(100vh - 53px); }
-      #map { height: 100%; width: 100%; }
+      #map { height: 100%; width: 100%; color-scheme: light; background: #fff; }
+      #map img { filter: none !important; }
       aside { border-left: 1px solid rgba(255,255,255,0.08); padding: 14px; overflow: auto; }
       .card { background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); border-radius: 14px; padding: 12px; margin-bottom: 12px; }
       .row { display: flex; gap: 10px; align-items: center; }
@@ -238,12 +242,13 @@ function adminHtml() {
       }
 
       function updateButtons() {
+        const adminEnabled = window.__adminEnabled !== false;
         const hasToken = (sessionStorage.getItem("aimap_admin_token") || "").trim().length > 0;
         const hasSelection = !!window.__selected;
         const isAutoRunning = !!(window.__auto && window.__auto.running);
-        document.getElementById("prime").disabled = !hasToken || !hasSelection || isAutoRunning;
-        document.getElementById("primeWithCandidates").disabled = !hasToken || !hasSelection || isAutoRunning;
-        document.getElementById("autoStart").disabled = !hasToken || !hasSelection || isAutoRunning;
+        document.getElementById("prime").disabled = !adminEnabled || !hasToken || !hasSelection || isAutoRunning;
+        document.getElementById("primeWithCandidates").disabled = !adminEnabled || !hasToken || !hasSelection || isAutoRunning;
+        document.getElementById("autoStart").disabled = !adminEnabled || !hasToken || !hasSelection || isAutoRunning;
         document.getElementById("autoStop").disabled = !isAutoRunning;
       }
 
@@ -255,6 +260,22 @@ function adminHtml() {
       function autoStatus(text) {
         const el = document.getElementById("autoStatus");
         if (el) el.textContent = text;
+      }
+
+      async function loadAdminStatus() {
+        try {
+          const res = await fetch("/admin/api/admin_status");
+          const data = await res.json();
+          window.__adminEnabled = !!(data && data.admin_enabled);
+          window.__hasKV = !!(data && data.has_kv);
+          if (window.__adminEnabled === false) {
+            statusLine("Admin is disabled on this Worker (set ADMIN_TOKEN).");
+          } else if (window.__hasKV === false) {
+            statusLine("KV binding MAP_CACHE is missing (cache will be ephemeral).");
+          }
+        } catch {
+          // ignore
+        }
       }
 
       window.__auto = { running: false };
@@ -570,7 +591,7 @@ function adminHtml() {
       document.getElementById("autoStart").addEventListener("click", () => startAutoPrime().catch(err => autoStatus("Auto prime error: " + err.message)));
       document.getElementById("autoStop").addEventListener("click", () => stopAutoPrime("Auto prime stopped"));
 
-      updateButtons();
+      loadAdminStatus().finally(() => updateButtons());
       refreshOverlay().catch(() => {});
     </script>
   </body>
@@ -589,6 +610,12 @@ export async function handleAdmin(request, env) {
 
   if (request.method === "GET" && (url.pathname === "/admin" || url.pathname === "/admin/")) {
     return await handleAdminPage();
+  }
+
+  if (url.pathname === "/admin/api/admin_status" && request.method === "GET") {
+    const enabled = typeof env?.ADMIN_TOKEN === "string" && env.ADMIN_TOKEN.trim().length > 0;
+    const hasKV = env?.MAP_CACHE && typeof env.MAP_CACHE.get === "function" && typeof env.MAP_CACHE.put === "function";
+    return jsonResponse({ admin_enabled: enabled, has_kv: !!hasKV });
   }
 
   if (url.pathname === "/admin/api/candidate_cells" && request.method === "GET") {

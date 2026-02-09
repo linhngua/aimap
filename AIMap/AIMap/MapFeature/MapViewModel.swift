@@ -104,7 +104,7 @@ final class MapViewModel: ObservableObject {
     @Published private(set) var nearbyIsStale: Bool = false
 
     @Published private(set) var candidatesById: [String: CandidatePlace] = [:]
-    @Published var selectedCategory: PlaceCategory = .restaurants
+    @Published var selectedCategory: POICategory = .restaurants
     @Published var lastTappedCoordinate: CLLocationCoordinate2D?
 
     @Published var isLoadingNearby: Bool = false
@@ -175,12 +175,12 @@ final class MapViewModel: ObservableObject {
         beginTapPipeline(coordinate: coordinate, bypassCache: true)
     }
 
-    func selectCategory(_ category: PlaceCategory) {
+    func selectCategory(_ category: POICategory) {
         selectedCategory = category
     }
 
-    func ensureSelectedCategory(in visibleCategories: [PlaceCategory]) {
-        let allowed = visibleCategories.isEmpty ? Array(PlaceCategory.allCases) : visibleCategories
+    func ensureSelectedCategory(in visibleCategories: [POICategory]) {
+        let allowed = visibleCategories.isEmpty ? Array(POICategory.allCases) : visibleCategories
         guard !allowed.isEmpty else { return }
 
         if allowed.contains(selectedCategory), (categoryCounts[selectedCategory] ?? 0) > 0 {
@@ -188,9 +188,9 @@ final class MapViewModel: ObservableObject {
         }
 
         if nearbyPayload != nil {
-            let candidates: [(PlaceCategory, Int, Double)] = allowed.map { category in
+            let candidates: [(POICategory, Int, Double)] = allowed.map { category in
                 let count = categoryCounts[category] ?? 0
-                let score = rankedItems(for: category).first?.score ?? 0
+                let score = listItems(for: category).first?.score ?? 0
                 return (category, count, score)
             }
             let sorted = candidates.sorted { lhs, rhs in
@@ -203,9 +203,9 @@ final class MapViewModel: ObservableObject {
             }
 
             // If we have results, but none in visible buckets, fall back to any with items.
-            let allCounts: [(PlaceCategory, Int, Double)] = PlaceCategory.allCases.map { category in
+            let allCounts: [(POICategory, Int, Double)] = POICategory.allCases.map { category in
                 let count = categoryCounts[category] ?? 0
-                let score = rankedItems(for: category).first?.score ?? 0
+                let score = listItems(for: category).first?.score ?? 0
                 return (category, count, score)
             }
             let bestAny = allCounts.sorted { lhs, rhs in
@@ -253,38 +253,43 @@ final class MapViewModel: ObservableObject {
         }
     }
 
-    var categoryCounts: [PlaceCategory: Int] {
-        guard let categories = nearbyPayload?.categories else { return [:] }
-        return [
-            .restaurants: categories.restaurants.count,
-            .bars: categories.bars.count,
-            .attractions: categories.attractions.count,
-            .shops: categories.shops.count,
-        ]
+    var categoryCounts: [POICategory: Int] {
+        guard let candidates = nearbyPayload?.candidates else { return [:] }
+        var counts: [POICategory: Int] = [:]
+        for place in candidates {
+            let category = POICategory.classify(place)
+            counts[category, default: 0] += 1
+        }
+        return counts
     }
 
-    var rankedItemsForSelectedCategory: [NearbyRankedItem] {
-        rankedItems(for: selectedCategory)
+    var listItemsForSelectedCategory: [POIListItem] {
+        listItems(for: selectedCategory)
     }
 
     var visiblePlaces: [CandidatePlace] {
-        places(for: selectedCategory)
+        listItemsForSelectedCategory.map(\.place)
     }
 
-    func rankedItems(for category: PlaceCategory) -> [NearbyRankedItem] {
-        guard let categories = nearbyPayload?.categories else { return [] }
-        let items: [NearbyRankedItem]
-        switch category {
-        case .restaurants: items = categories.restaurants
-        case .bars: items = categories.bars
-        case .attractions: items = categories.attractions
-        case .shops: items = categories.shops
+    func listItems(for category: POICategory) -> [POIListItem] {
+        guard let payload = nearbyPayload else { return [] }
+
+        var rankedById: [String: NearbyRankedItem] = [:]
+        for item in payload.categories.restaurants + payload.categories.bars + payload.categories.attractions + payload.categories.shops {
+            rankedById[item.placeLocalId] = item
         }
-        return items.sorted { $0.score > $1.score }
-    }
 
-    func places(for category: PlaceCategory) -> [CandidatePlace] {
-        rankedItems(for: category).compactMap { candidatesById[$0.placeLocalId] }
+        let filtered = payload.candidates.filter { POICategory.classify($0) == category }
+        let items: [POIListItem] = filtered.map { place in
+            if let ranked = rankedById[place.placeLocalId] {
+                return POIListItem(place: place, score: ranked.score, why: ranked.why, tags: ranked.tags)
+            }
+            return POIListItem(place: place, score: fallbackScore(for: place), why: "From MapKit.", tags: fallbackTags(for: place))
+        }
+        return items.sorted { lhs, rhs in
+            if lhs.score != rhs.score { return lhs.score > rhs.score }
+            return lhs.place.name < rhs.place.name
+        }
     }
 
     private func loadPlaceDetail(place: CandidatePlace, bypassCache: Bool) async {
@@ -485,21 +490,6 @@ final class MapViewModel: ObservableObject {
         return BackendClient(configuration: .init(baseURL: url))
     }
 
-    private func defaultCategory(from categories: NearbyCategories) -> PlaceCategory {
-        let counts: [(PlaceCategory, Int, Double)] = [
-            (.restaurants, categories.restaurants.count, categories.restaurants.first?.score ?? 0),
-            (.bars, categories.bars.count, categories.bars.first?.score ?? 0),
-            (.attractions, categories.attractions.count, categories.attractions.first?.score ?? 0),
-            (.shops, categories.shops.count, categories.shops.first?.score ?? 0),
-        ]
-
-        let sorted = counts.sorted { lhs, rhs in
-            if lhs.1 != rhs.1 { return lhs.1 > rhs.1 }
-            return lhs.2 > rhs.2
-        }
-        return sorted.first?.0 ?? .restaurants
-    }
-
     private func requestUserLocation() {
         guard CLLocationManager.locationServicesEnabled() else { return }
         locationManager.delegate = locationDelegate
@@ -623,17 +613,27 @@ final class MapViewModel: ObservableObject {
             placeDetail = nil
             placeDetailErrorMessage = nil
         }
-        let counts = [
-            PlaceCategory.restaurants: payload.categories.restaurants.count,
-            PlaceCategory.bars: payload.categories.bars.count,
-            PlaceCategory.attractions: payload.categories.attractions.count,
-            PlaceCategory.shops: payload.categories.shops.count,
-        ]
-        if let currentCount = counts[selectedCategory], currentCount > 0 {
-            // keep current selection
-        } else {
-            selectedCategory = defaultCategory(from: payload.categories)
-        }
+    }
+
+    private func fallbackScore(for place: CandidatePlace) -> Double {
+        var score = 0.0
+        if place.openNow == true { score += 0.12 }
+        if place.url != nil { score += 0.06 }
+        if place.phone != nil { score += 0.04 }
+        if let rating = place.rating { score += min(1, rating / 5.0) * 0.6 }
+        if let count = place.ratingCount { score += min(1, log10(Double(count) + 1) / 3.0) * 0.18 }
+        return min(1, score)
+    }
+
+    private func fallbackTags(for place: CandidatePlace) -> [String] {
+        Array(
+            place.rawCategories
+                .map { $0.replacingOccurrences(of: "MKPOICategory", with: "") }
+                .map { $0.replacingOccurrences(of: "([a-z])([A-Z])", with: "$1 $2", options: .regularExpression) }
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+                .prefix(3)
+        )
     }
 
     private func runNearbyPipeline(requestId: Int, coordinate: CLLocationCoordinate2D, bypassCache: Bool) async {

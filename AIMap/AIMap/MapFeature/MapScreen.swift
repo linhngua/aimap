@@ -5,7 +5,7 @@ struct MapScreen: View {
     @StateObject private var viewModel = MapViewModel()
     @FocusState private var isSearchFocused: Bool
     @State private var locationQuery: String = ""
-    @State private var gridCategory: PlaceCategory?
+    @State private var gridCategory: POICategory?
     @AppStorage(CategoryPreferences.storageKey) private var visibleCategoriesRaw: String = CategoryPreferences.encode(CategoryPreferences.defaultSelection)
     private let mapStyle: LuxuryMapStyle = .premium
 
@@ -166,7 +166,6 @@ struct MapScreen: View {
                             gridCategory = category
                         }
                     )
-                    .disabled(count == 0)
                 }
             }
             .padding(.horizontal)
@@ -218,30 +217,29 @@ struct MapScreen: View {
         VStack(spacing: 0) {
             if viewModel.nearbyPayload != nil {
                 List {
-                    ForEach(viewModel.rankedItemsForSelectedCategory) { ranked in
-                        if let place = viewModel.candidatesById[ranked.placeLocalId] {
-                            Button {
-                                viewModel.selectPlace(place)
-                            } label: {
-                                VStack(alignment: .leading, spacing: 6) {
-                                    HStack {
-                                        Text(place.name)
-                                            .font(.headline)
-                                        Spacer()
-                                        ratingView(for: place)
-                                        Text(String(format: "%.2f", ranked.score))
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                    }
-                                    Text(place.addressShort)
-                                        .font(.subheadline)
+                    ForEach(viewModel.listItemsForSelectedCategory) { item in
+                        let place = item.place
+                        Button {
+                            viewModel.selectPlace(place)
+                        } label: {
+                            VStack(alignment: .leading, spacing: 6) {
+                                HStack {
+                                    Text(place.name)
+                                        .font(.headline)
+                                    Spacer()
+                                    ratingView(for: place)
+                                    Text(String(format: "%.2f", item.score))
+                                        .font(.caption)
                                         .foregroundStyle(.secondary)
-                                        .lineLimit(1)
-                                    Text(ranked.why)
-                                        .font(.footnote)
-                                        .foregroundStyle(.secondary)
-                                        .lineLimit(2)
                                 }
+                                Text(place.addressShort)
+                                    .font(.subheadline)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                                Text(item.why)
+                                    .font(.footnote)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(2)
                             }
                         }
                     }
@@ -255,7 +253,7 @@ struct MapScreen: View {
         }
     }
 
-    private var visibleCategories: [PlaceCategory] {
+    private var visibleCategories: [POICategory] {
         CategoryPreferences.normalize(CategoryPreferences.decode(visibleCategoriesRaw))
     }
 
@@ -293,7 +291,7 @@ struct MapScreen: View {
 }
 
 private struct CategoryChip: View {
-    let category: PlaceCategory
+    let category: POICategory
     let count: Int
     let isSelected: Bool
     let accent: Color
