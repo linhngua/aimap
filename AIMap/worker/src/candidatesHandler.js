@@ -1,0 +1,82 @@
+import { errorResponse, jsonResponse, safeLog } from "./utils.js";
+import { PlaceCandidateSchema } from "./schema.js";
+import { geohashEncode } from "./geohash.js";
+import { ingestCandidates } from "./candidatesStore.js";
+import { candidatesCacheTtlSeconds } from "./config.js";
+
+const MAX_LLM_CANDIDATES = 40;
+
+function isObject(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function radiusBucket(radius_m) {
+  if (!Number.isFinite(radius_m)) return 800;
+  if (radius_m <= 400) return 300;
+  if (radius_m <= 1100) return 800;
+  return 1500;
+}
+
+function geohashPrecisionForRadiusBucket(bucket) {
+  if (bucket === 300) return 7;
+  if (bucket === 800) return 6;
+  return 5;
+}
+
+export async function handleCandidatesIngest(request, env) {
+  let payloadUnknown;
+  try {
+    payloadUnknown = await request.json();
+  } catch {
+    return errorResponse("Invalid JSON", 400);
+  }
+
+  if (!isObject(payloadUnknown)) return errorResponse("Invalid request", 400);
+
+  const lat = payloadUnknown.lat;
+  const lng = payloadUnknown.lng;
+  const radius_m = payloadUnknown.radius_m;
+  if (typeof lat !== "number" || typeof lng !== "number") return errorResponse("Invalid lat/lng", 400);
+  if (typeof radius_m !== "number" || !Number.isInteger(radius_m) || radius_m <= 0) return errorResponse("Invalid radius_m", 400);
+
+  const candidatesValue = Array.isArray(payloadUnknown.candidates) ? payloadUnknown.candidates : [];
+  if (candidatesValue.length === 0) return errorResponse("Missing candidates", 400);
+  if (candidatesValue.length > MAX_LLM_CANDIDATES) return errorResponse("Too many candidates", 400);
+
+  let candidates;
+  try {
+    candidates = candidatesValue.map((c) => PlaceCandidateSchema.parse(c));
+  } catch (err) {
+    return errorResponse("Invalid candidates", 400, String(err));
+  }
+
+  const bucket = radiusBucket(radius_m);
+  const precision = geohashPrecisionForRadiusBucket(bucket);
+  const cell_id =
+    typeof payloadUnknown.cell_id === "string" && payloadUnknown.cell_id.length > 0
+      ? payloadUnknown.cell_id
+      : geohashEncode(lat, lng, precision);
+
+  const nowSeconds = Math.floor(Date.now() / 1000);
+
+  safeLog(env, "[candidates_ingest] request", {
+    cell_id,
+    radius_bucket: bucket,
+    candidates: candidates.length,
+  });
+
+  try {
+    const stored = await ingestCandidates(env, {
+      lat,
+      lng,
+      cell_id,
+      radius_bucket: bucket,
+      candidates,
+      nowSeconds,
+      ttlSeconds: candidatesCacheTtlSeconds(env),
+    });
+    return jsonResponse({ status: "ok", cell_id, radius_bucket: bucket, etag: stored.etag, stored_candidates: stored.candidates.length });
+  } catch (err) {
+    return errorResponse("Failed to ingest candidates", 500, String(err));
+  }
+}

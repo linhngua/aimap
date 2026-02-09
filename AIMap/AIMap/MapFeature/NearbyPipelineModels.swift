@@ -61,3 +61,18 @@ struct NearbyRefreshEnvelope: Codable, Hashable {
     let payload: NearbyPayload?
 }
 
+struct CandidatesIngestRequest: Codable {
+    let lat: Double
+    let lng: Double
+    let radiusM: Int
+    let cellId: String
+    let candidates: [CandidatePlace]
+}
+
+struct CandidatesIngestResponse: Codable, Hashable {
+    let status: String
+    let cellId: String
+    let radiusBucket: Int
+    let etag: String?
+    let storedCandidates: Int?
+}

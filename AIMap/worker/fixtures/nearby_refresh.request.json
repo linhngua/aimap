@@ -1,0 +1,26 @@
+{
+  "lat": 37.3349,
+  "lng": -122.009,
+  "radius_m": 800,
+  "categories": ["restaurants", "bars", "attractions", "shops"],
+  "cell_id": "9q9hv",
+  "time_bucket": "2026-02-09T10:00Z",
+  "client_etag": null,
+  "candidates": [
+    {
+      "place_local_id": "test_1",
+      "name": "Test Cafe",
+      "lat": 37.3349,
+      "lng": -122.009,
+      "address_short": "1 Infinite Loop",
+      "raw_categories": ["MKPOICategoryCafe"],
+      "url": null,
+      "phone": null,
+      "rating": 4.2,
+      "rating_count": 120,
+      "price_level": 2,
+      "open_now": true
+    }
+  ]
+}
+

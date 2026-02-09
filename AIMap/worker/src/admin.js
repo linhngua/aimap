@@ -1,15 +1,15 @@
 import { callNearbyLLM } from "./openai.js";
 import { NEARBY_SYSTEM_PROMPT } from "./prompts.js";
 import { sha256Hex, stableStringify } from "./etag.js";
-import { geohashCenter, geohashDecodeBounds, geohashEncode, geohashNeighbors, haversineDistanceM } from "./geohash.js";
+import { geohashCenter, geohashDecodeBounds, geohashEncode } from "./geohash.js";
 import { kvGetJson, kvList, kvPutJson } from "./kv.js";
 import { PlaceCandidateSchema } from "./schema.js";
 import { parseJsonLoose, sanitizeNearbyResponse } from "./sanitize.js";
 import { errorResponse, getBypassCache, jsonResponse, safeLog } from "./utils.js";
+import { candidatesLatestKey, findBestCandidates, ingestCandidates } from "./candidatesStore.js";
+import { candidatesCacheTtlSeconds, nearbyCacheTtlSeconds, nearbyStaleAfterSeconds } from "./config.js";
 
 const FIXED_CATEGORIES = ["restaurants", "bars", "attractions", "shops"];
-const CACHE_TTL_SECONDS = 7 * 24 * 60 * 60;
-const STALE_AFTER_SECONDS = 10 * 60;
 const MAX_LLM_CANDIDATES = 40;
 
 function isObject(value) {
@@ -48,11 +48,6 @@ function geohashPrecisionForRadiusBucket(bucket) {
   return 5;
 }
 
-function currentTimeBucket(nowSeconds, bucketSeconds = 30 * 60) {
-  const bucketStart = Math.floor(nowSeconds / bucketSeconds) * bucketSeconds;
-  return String(bucketStart);
-}
-
 function nearbyKey({ cell_id, radius_bucket, categories_key, time_bucket }) {
   return `nearby:${cell_id}:${radius_bucket}:${categories_key}:${time_bucket}`;
 }
@@ -68,6 +63,13 @@ async function computeEtag(payload) {
 function parseCachedKeyName(name) {
   if (typeof name !== "string") return null;
   const parts = name.split(":");
+  if (parts.length === 3 && parts[0] === "candidates_latest") {
+    const cell_id = parts[1] ?? "";
+    const radius_bucket = Number.parseInt(parts[2] ?? "", 10);
+    if (!cell_id) return null;
+    if (!Number.isInteger(radius_bucket)) return null;
+    return { kind: "candidates_latest", cell_id, radius_bucket };
+  }
   if (parts.length === 4 && parts[0] === "nearby_latest") {
     const cell_id = parts[1] ?? "";
     const radius_bucket = Number.parseInt(parts[2] ?? "", 10);
@@ -91,48 +93,8 @@ function parseCachedKeyName(name) {
   return null;
 }
 
-async function getBestCandidateSource(env, query, { radius_bucket, categories_key, cell_id }) {
-  const candidates = [];
-
-  const tryCell = async (candidateCellId) => {
-    const key = nearbyLatestKey({ cell_id: candidateCellId, radius_bucket, categories_key });
-    const cached = await kvGetJson(env, key);
-    if (!cached || !isObject(cached) || !isObject(cached.payload)) return;
-    const payload = cached.payload;
-    if (!Array.isArray(payload.candidates)) return;
-    const parsedCandidates = payload.candidates
-      .slice(0, MAX_LLM_CANDIDATES)
-      .map((c) => {
-        try {
-          return PlaceCandidateSchema.parse(c);
-        } catch {
-          return null;
-        }
-      })
-      .filter(Boolean);
-    if (parsedCandidates.length === 0) return;
-
-    const center = geohashCenter(candidateCellId);
-    if (!center) return;
-    const distance_m = haversineDistanceM({ lat: query.lat, lng: query.lng }, center);
-    candidates.push({ candidateCellId, distance_m, candidates: parsedCandidates });
-  };
-
-  await tryCell(cell_id);
-  for (const neighbor of geohashNeighbors(cell_id)) {
-    await tryCell(neighbor);
-  }
-
-  if (candidates.length === 0 && cell_id.length > 1) {
-    const lower = cell_id.slice(0, -1);
-    await tryCell(lower);
-    for (const neighbor of geohashNeighbors(lower)) {
-      await tryCell(neighbor);
-    }
-  }
-
-  candidates.sort((a, b) => a.distance_m - b.distance_m);
-  return candidates[0] ?? null;
+async function getBestCandidateSource(env, query, { radius_bucket, cell_id }) {
+  return await findBestCandidates(env, query, { cell_id, radius_bucket });
 }
 
 function adminHtml() {
@@ -196,7 +158,7 @@ function adminHtml() {
             <button id="refresh" class="primary">Refresh</button>
           </div>
           <div class="status muted small" style="margin-top: 10px">
-            Overlay shows cached <span class="mono">nearby_latest</span> cells near the viewport.
+            Overlay shows grouped cache (<span class="mono">nearby_latest</span>) as filled cells, and ingested candidates (<span class="mono">candidates_latest</span>) as outlines.
           </div>
         </div>
 
@@ -210,11 +172,33 @@ function adminHtml() {
           <div class="grid">
             <button id="prime" class="primary" disabled>Prime selected cell</button>
             <div class="status muted small">
-              Priming reuses cached candidates when available (no invented places).
-              If a cell has never been cached, paste candidates JSON below or tap it in the iOS app once.
+              Priming uses ingested candidates (from iOS taps) when available (no invented places).
+              If a cell has no candidates yet, paste candidates JSON below or tap it in the iOS app once.
             </div>
             <textarea id="candidates" placeholder='Optional: paste candidates array JSON (max 40)...'></textarea>
             <button id="primeWithCandidates" class="danger" disabled>Prime with pasted candidates</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="label">Auto Prime</div>
+          <div class="grid">
+            <div class="row">
+              <input id="autoHours" type="number" min="0.25" step="0.25" value="2" placeholder="Hours" />
+              <input id="autoMaxCells" type="number" min="10" step="10" value="400" placeholder="Max cells" />
+            </div>
+            <div class="row">
+              <input id="autoRings" type="number" min="1" step="1" value="10" placeholder="Rings" />
+              <select id="autoMode">
+                <option value="miss_only" selected>Prime missing</option>
+                <option value="stale_or_miss">Prime stale+missing</option>
+              </select>
+            </div>
+            <div class="row">
+              <button id="autoStart" class="primary" disabled>Start</button>
+              <button id="autoStop" class="danger" disabled>Stop</button>
+            </div>
+            <div id="autoStatus" class="status muted small">Auto prime runs in your browser session.</div>
           </div>
         </div>
 
@@ -223,6 +207,8 @@ function adminHtml() {
           <div class="status">
             <div>API endpoints used:</div>
             <div class="mono">GET /admin/api/cached_cells</div>
+            <div class="mono">GET /admin/api/candidate_cells</div>
+            <div class="mono">GET /admin/api/cell_status</div>
             <div class="mono">POST /admin/api/prime</div>
             <div class="muted small" style="margin-top: 10px">
               Add <span class="mono">ADMIN_TOKEN</span> and <span class="mono">MAP_CACHE</span> KV binding for best results.
@@ -253,14 +239,25 @@ function adminHtml() {
 
       function updateButtons() {
         const hasToken = (sessionStorage.getItem("aimap_admin_token") || "").trim().length > 0;
-        document.getElementById("prime").disabled = !hasToken || !window.__selected;
-        document.getElementById("primeWithCandidates").disabled = !hasToken || !window.__selected;
+        const hasSelection = !!window.__selected;
+        const isAutoRunning = !!(window.__auto && window.__auto.running);
+        document.getElementById("prime").disabled = !hasToken || !hasSelection || isAutoRunning;
+        document.getElementById("primeWithCandidates").disabled = !hasToken || !hasSelection || isAutoRunning;
+        document.getElementById("autoStart").disabled = !hasToken || !hasSelection || isAutoRunning;
+        document.getElementById("autoStop").disabled = !isAutoRunning;
       }
 
       function statusLine(text) {
         const el = document.getElementById("selected");
         if (el) el.textContent = text;
       }
+
+      function autoStatus(text) {
+        const el = document.getElementById("autoStatus");
+        if (el) el.textContent = text;
+      }
+
+      window.__auto = { running: false };
 
       const map = L.map("map", { zoomControl: true }).setView([37.3349, -122.0090], 13);
       L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
@@ -343,30 +340,55 @@ function adminHtml() {
         const prefixes = Array.from(new Set(corners.map(p => geohashEncode(p.lat, p.lng, precision).slice(0, prefixLen))));
 
         const categoriesKey = categoriesKeyFixed();
-        let all = [];
+        let groupedAll = [];
+        let candidatesAll = [];
         for (const prefix of prefixes) {
-          const url = \`/admin/api/cached_cells?cell_prefix=\${encodeURIComponent(prefix)}&radius_bucket=\${radiusBucket}&categories_key=\${encodeURIComponent(categoriesKey)}&limit=400\`;
-          const data = await fetchJson(url, { headers: adminHeaders() });
-          all = all.concat(data.cells || []);
+          const groupedUrl = \`/admin/api/cached_cells?cell_prefix=\${encodeURIComponent(prefix)}&radius_bucket=\${radiusBucket}&categories_key=\${encodeURIComponent(categoriesKey)}&limit=400\`;
+          const candidatesUrl = \`/admin/api/candidate_cells?cell_prefix=\${encodeURIComponent(prefix)}&radius_bucket=\${radiusBucket}&limit=400\`;
+          const groupedData = await fetchJson(groupedUrl, { headers: adminHeaders() });
+          const candidatesData = await fetchJson(candidatesUrl, { headers: adminHeaders() });
+          groupedAll = groupedAll.concat(groupedData.cells || []);
+          candidatesAll = candidatesAll.concat(candidatesData.cells || []);
         }
 
-        const uniqueByCell = new Map();
-        for (const cell of all) {
+        const uniqueCandidates = new Map();
+        for (const cell of candidatesAll) {
+          const key = cell.cell_id + ":" + cell.radius_bucket;
+          const existing = uniqueCandidates.get(key);
+          if (!existing || (cell.produced_at || 0) > (existing.produced_at || 0)) uniqueCandidates.set(key, cell);
+        }
+
+        for (const cell of uniqueCandidates.values()) {
+          if (!cell.bounds) continue;
+          const b = cell.bounds;
+          const rect = L.rectangle([[b.lat_min, b.lng_min], [b.lat_max, b.lng_max]], {
+            color: "#60A5FA",
+            weight: 1,
+            opacity: 0.55,
+            fillOpacity: 0.0,
+            dashArray: "5,6"
+          });
+          rect.bindTooltip(\`candidates \${cell.cell_id} • \${formatTs(cell.produced_at)}\`, { sticky: true });
+          rect.addTo(overlayLayer);
+        }
+
+        const uniqueGrouped = new Map();
+        for (const cell of groupedAll) {
           const key = cell.cell_id + ":" + cell.radius_bucket + ":" + cell.categories_key;
-          const existing = uniqueByCell.get(key);
-          if (!existing || (cell.produced_at || 0) > (existing.produced_at || 0)) uniqueByCell.set(key, cell);
+          const existing = uniqueGrouped.get(key);
+          if (!existing || (cell.produced_at || 0) > (existing.produced_at || 0)) uniqueGrouped.set(key, cell);
         }
 
-        for (const cell of uniqueByCell.values()) {
+        for (const cell of uniqueGrouped.values()) {
           if (!cell.bounds) continue;
           const b = cell.bounds;
           const rect = L.rectangle([[b.lat_min, b.lng_min], [b.lat_max, b.lng_max]], {
             color: cell.stale ? "#F7C74A" : "#4CD964",
             weight: 1,
-            opacity: 0.6,
+            opacity: 0.65,
             fillOpacity: cell.stale ? 0.08 : 0.10
           });
-          rect.bindTooltip(\`cell \${cell.cell_id} • \${cell.stale ? "stale" : "fresh"} • \${formatTs(cell.produced_at)}\`, { sticky: true });
+          rect.bindTooltip(\`grouped \${cell.cell_id} • \${cell.stale ? "stale" : "fresh"} • \${formatTs(cell.produced_at)}\`, { sticky: true });
           rect.addTo(overlayLayer);
         }
       }
@@ -379,8 +401,11 @@ function adminHtml() {
         selectionLayer.clearLayers();
         const marker = L.circleMarker(e.latlng, { radius: 6, color: "#D84A4A", weight: 2, fillOpacity: 0.25 });
         marker.addTo(selectionLayer);
-        window.__selected = { lat: e.latlng.lat, lng: e.latlng.lng };
-        statusLine(\`Selected: \${e.latlng.lat.toFixed(6)}, \${e.latlng.lng.toFixed(6)}\`);
+        const radiusBucket = parseInt(document.getElementById("radius").value, 10);
+        const precision = precisionForRadiusBucket(radiusBucket);
+        const cellId = geohashEncode(e.latlng.lat, e.latlng.lng, precision);
+        window.__selected = { lat: e.latlng.lat, lng: e.latlng.lng, cell_id: cellId };
+        statusLine(\`Selected: \${e.latlng.lat.toFixed(6)}, \${e.latlng.lng.toFixed(6)} • cell \${cellId}\`);
         updateButtons();
       });
 
@@ -400,6 +425,7 @@ function adminHtml() {
           lat: window.__selected.lat,
           lng: window.__selected.lng,
           radius_m: radiusBucket,
+          cell_id: window.__selected.cell_id,
           categories: ["restaurants","bars","attractions","shops"],
           candidates
         };
@@ -414,6 +440,135 @@ function adminHtml() {
 
       document.getElementById("prime").addEventListener("click", () => primeSelected(false).catch(err => statusLine("Prime error: " + err.message)));
       document.getElementById("primeWithCandidates").addEventListener("click", () => primeSelected(true).catch(err => statusLine("Prime error: " + err.message)));
+
+      function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
+
+      function stepMetersForBucket(bucket) {
+        if (bucket === 300) return 220;
+        if (bucket === 800) return 550;
+        return 950;
+      }
+
+      function buildGridCells(center, rings, precision, stepMeters) {
+        const latStep = stepMeters / 111000;
+        const lngStep = stepMeters / (111000 * Math.max(0.2, Math.cos(center.lat * Math.PI / 180)));
+        const byCell = new Map();
+
+        for (let dy = -rings; dy <= rings; dy++) {
+          for (let dx = -rings; dx <= rings; dx++) {
+            const lat = center.lat + (dy * latStep);
+            const lng = center.lng + (dx * lngStep);
+            const cell = geohashEncode(lat, lng, precision);
+            const dist2 = dx * dx + dy * dy;
+            const existing = byCell.get(cell);
+            if (!existing || dist2 < existing.dist2) {
+              byCell.set(cell, { cell_id: cell, lat, lng, dist2 });
+            }
+          }
+        }
+
+        return Array.from(byCell.values()).sort((a, b) => a.dist2 - b.dist2);
+      }
+
+      function stopAutoPrime(message) {
+        if (!window.__auto || !window.__auto.running) return;
+        window.__auto.running = false;
+        const s = window.__auto.stats;
+        autoStatus(\`\${message} • primed=\${s.primed} • skipped=\${s.skipped} • errors=\${s.errors}\`);
+        updateButtons();
+        refreshOverlay().catch(() => {});
+      }
+
+      async function startAutoPrime() {
+        const token = (sessionStorage.getItem("aimap_admin_token") || "").trim();
+        if (!token) throw new Error("Set ADMIN_TOKEN first.");
+        if (!window.__selected) throw new Error("Select a cell first.");
+        if (window.__auto && window.__auto.running) return;
+
+        const hours = Math.max(0.25, parseFloat(document.getElementById("autoHours").value || "2"));
+        const maxCells = Math.max(10, parseInt(document.getElementById("autoMaxCells").value || "400", 10));
+        const rings = Math.max(1, parseInt(document.getElementById("autoRings").value || "10", 10));
+        const mode = document.getElementById("autoMode").value || "miss_only";
+
+        const radiusBucket = parseInt(document.getElementById("radius").value, 10);
+        const precision = precisionForRadiusBucket(radiusBucket);
+        const stepMeters = stepMetersForBucket(radiusBucket);
+
+        const cells = buildGridCells(window.__selected, rings, precision, stepMeters);
+        const endAt = Date.now() + (hours * 60 * 60 * 1000);
+
+        window.__auto = {
+          running: true,
+          endAt,
+          radiusBucket,
+          categoriesKey: categoriesKeyFixed(),
+          mode,
+          cells,
+          index: 0,
+          maxCells,
+          stats: { primed: 0, skipped: 0, errors: 0 }
+        };
+
+        autoStatus(\`Auto prime started • cells=\${cells.length} • hours=\${hours}\`);
+        updateButtons();
+
+        while (window.__auto.running) {
+          const auto = window.__auto;
+          if (Date.now() >= auto.endAt) {
+            stopAutoPrime("Auto prime finished (time elapsed)");
+            break;
+          }
+          if (auto.index >= auto.cells.length || auto.index >= auto.maxCells) {
+            stopAutoPrime("Auto prime finished (queue complete)");
+            break;
+          }
+
+          const item = auto.cells[auto.index++];
+
+          try {
+            const statusUrl = \`/admin/api/cell_status?cell_id=\${encodeURIComponent(item.cell_id)}&radius_bucket=\${auto.radiusBucket}&categories_key=\${encodeURIComponent(auto.categoriesKey)}\`;
+            const status = await fetchJson(statusUrl, { headers: adminHeaders() });
+            const shouldPrime = auto.mode === "stale_or_miss"
+              ? (!status.has_grouped || status.grouped_stale)
+              : (!status.has_grouped);
+
+            if (!shouldPrime) {
+              auto.stats.skipped += 1;
+            } else if (!status.has_candidates) {
+              auto.stats.skipped += 1;
+            } else {
+              autoStatus(\`Priming \${item.cell_id}… (primed=\${auto.stats.primed})\`);
+              await fetchJson("/admin/api/prime", {
+                method: "POST",
+                headers: { "content-type": "application/json", ...adminHeaders() },
+                body: JSON.stringify({
+                  lat: item.lat,
+                  lng: item.lng,
+                  radius_m: auto.radiusBucket,
+                  cell_id: item.cell_id,
+                  categories: ["restaurants","bars","attractions","shops"],
+                  allow_approx_candidates: false
+                })
+              });
+              auto.stats.primed += 1;
+            }
+          } catch (err) {
+            window.__auto.stats.errors += 1;
+          }
+
+          const remaining = Math.min(window.__auto.cells.length, window.__auto.maxCells) - window.__auto.index;
+          autoStatus(\`Running • primed=\${window.__auto.stats.primed} • skipped=\${window.__auto.stats.skipped} • errors=\${window.__auto.stats.errors} • remaining=\${Math.max(0, remaining)}\`);
+
+          if ((window.__auto.stats.primed + window.__auto.stats.skipped) % 12 === 0) {
+            refreshOverlay().catch(() => {});
+          }
+
+          await sleep(300);
+        }
+      }
+
+      document.getElementById("autoStart").addEventListener("click", () => startAutoPrime().catch(err => autoStatus("Auto prime error: " + err.message)));
+      document.getElementById("autoStop").addEventListener("click", () => stopAutoPrime("Auto prime stopped"));
 
       updateButtons();
       refreshOverlay().catch(() => {});
@@ -436,6 +591,104 @@ export async function handleAdmin(request, env) {
     return await handleAdminPage();
   }
 
+  if (url.pathname === "/admin/api/candidate_cells" && request.method === "GET") {
+    const auth = requireAdminToken(request, env);
+    if (!auth.ok) return auth.response;
+
+    const cellPrefix = url.searchParams.get("cell_prefix") ?? "";
+    const radiusBucketParam = Number.parseInt(url.searchParams.get("radius_bucket") ?? "", 10);
+    const radiusBucketFilter = Number.isInteger(radiusBucketParam) ? radiusBucketParam : null;
+    const limitParam = Number.parseInt(url.searchParams.get("limit") ?? "", 10);
+    const limit = Number.isInteger(limitParam) ? Math.min(800, Math.max(1, limitParam)) : 200;
+
+    const listPrefix = `candidates_latest:${cellPrefix}`;
+    const listed = await kvList(env, { prefix: listPrefix, limit });
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    const staleAfterSeconds = nearbyStaleAfterSeconds(env);
+
+    const keys = Array.isArray(listed?.keys) ? listed.keys : [];
+    const entries = keys
+      .map((k) => parseCachedKeyName(k?.name))
+      .filter((parsed) => parsed?.kind === "candidates_latest")
+      .filter((parsed) => (radiusBucketFilter ? parsed.radius_bucket === radiusBucketFilter : true));
+
+    const cells = [];
+    for (const entry of entries) {
+      const key = candidatesLatestKey(entry);
+      const cached = await kvGetJson(env, key);
+      if (!cached || !isObject(cached)) continue;
+      const produced_at = typeof cached.produced_at === "number" ? cached.produced_at : 0;
+      const etag = typeof cached.etag === "string" ? cached.etag : null;
+      const bounds = geohashDecodeBounds(entry.cell_id);
+      if (!bounds) continue;
+      const stale = produced_at > 0 ? nowSeconds - produced_at > staleAfterSeconds : true;
+      const count = Array.isArray(cached.candidates) ? cached.candidates.length : 0;
+
+      cells.push({
+        cell_id: entry.cell_id,
+        radius_bucket: entry.radius_bucket,
+        produced_at,
+        stale,
+        etag,
+        count,
+        bounds: {
+          lat_min: bounds.latMin,
+          lat_max: bounds.latMax,
+          lng_min: bounds.lngMin,
+          lng_max: bounds.lngMax,
+        },
+      });
+    }
+
+    return jsonResponse({
+      cells,
+      list_complete: listed?.list_complete ?? true,
+      cursor: listed?.cursor ?? "",
+    });
+  }
+
+  if (url.pathname === "/admin/api/cell_status" && request.method === "GET") {
+    const auth = requireAdminToken(request, env);
+    if (!auth.ok) return auth.response;
+
+    const cell_id = url.searchParams.get("cell_id") ?? "";
+    const radiusBucketParam = Number.parseInt(url.searchParams.get("radius_bucket") ?? "", 10);
+    const categories_key = url.searchParams.get("categories_key") ?? "";
+    if (!cell_id) return errorResponse("Invalid cell_id", 400);
+    if (!Number.isInteger(radiusBucketParam)) return errorResponse("Invalid radius_bucket", 400);
+    if (!categories_key) return errorResponse("Invalid categories_key", 400);
+
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    const staleAfterSeconds = nearbyStaleAfterSeconds(env);
+
+    const groupedKey = nearbyLatestKey({ cell_id, radius_bucket: radiusBucketParam, categories_key });
+    const grouped = await kvGetJson(env, groupedKey);
+    const groupedProducedAt = typeof grouped?.produced_at === "number" ? grouped.produced_at : 0;
+    const has_grouped = !!grouped && typeof grouped?.etag === "string" && isObject(grouped?.payload);
+    const grouped_stale = groupedProducedAt > 0 ? nowSeconds - groupedProducedAt > staleAfterSeconds : true;
+
+    const candidatesKey = candidatesLatestKey({ cell_id, radius_bucket: radiusBucketParam });
+    const candidates = await kvGetJson(env, candidatesKey);
+    const candidatesProducedAt = typeof candidates?.produced_at === "number" ? candidates.produced_at : 0;
+    const has_candidates = !!candidates && typeof candidates?.etag === "string" && Array.isArray(candidates?.candidates);
+    const candidates_stale = candidatesProducedAt > 0 ? nowSeconds - candidatesProducedAt > staleAfterSeconds : true;
+
+    const center = geohashCenter(cell_id);
+
+    return jsonResponse({
+      cell_id,
+      radius_bucket: radiusBucketParam,
+      categories_key,
+      center,
+      has_grouped,
+      grouped_produced_at: groupedProducedAt || null,
+      grouped_stale,
+      has_candidates,
+      candidates_produced_at: candidatesProducedAt || null,
+      candidates_stale,
+    });
+  }
+
   if (url.pathname === "/admin/api/cached_cells" && request.method === "GET") {
     const auth = requireAdminToken(request, env);
     if (!auth.ok) return auth.response;
@@ -450,6 +703,7 @@ export async function handleAdmin(request, env) {
     const listPrefix = `nearby_latest:${cellPrefix}`;
     const listed = await kvList(env, { prefix: listPrefix, limit });
     const nowSeconds = Math.floor(Date.now() / 1000);
+    const staleAfterSeconds = nearbyStaleAfterSeconds(env);
 
     const keys = Array.isArray(listed?.keys) ? listed.keys : [];
     const candidates = keys
@@ -467,7 +721,7 @@ export async function handleAdmin(request, env) {
       const etag = typeof cached.etag === "string" ? cached.etag : null;
       const bounds = geohashDecodeBounds(entry.cell_id);
       if (!bounds) continue;
-      const stale = produced_at > 0 ? nowSeconds - produced_at > STALE_AFTER_SECONDS : true;
+      const stale = produced_at > 0 ? nowSeconds - produced_at > staleAfterSeconds : true;
 
       const payload = cached.payload;
       const counts = isObject(payload?.categories)
@@ -527,11 +781,7 @@ export async function handleAdmin(request, env) {
     const bucket = radiusBucket(radius_m);
     const precision = geohashPrecisionForRadiusBucket(bucket);
     const cell_id = typeof bodyUnknown.cell_id === "string" && bodyUnknown.cell_id.length > 0 ? bodyUnknown.cell_id : geohashEncode(lat, lng, precision);
-    const time_bucket =
-      typeof bodyUnknown.time_bucket === "string" && bodyUnknown.time_bucket.length > 0
-        ? bodyUnknown.time_bucket
-        : currentTimeBucket(Math.floor(Date.now() / 1000));
-
+    const allowApprox = bodyUnknown.allow_approx_candidates !== false;
     const bypassCache = getBypassCache(request);
 
     let candidates = null;
@@ -543,8 +793,22 @@ export async function handleAdmin(request, env) {
       } catch (err) {
         return errorResponse("Invalid candidates", 400, String(err));
       }
+
+      try {
+        await ingestCandidates(env, {
+          lat,
+          lng,
+          cell_id,
+          radius_bucket: bucket,
+          candidates,
+          nowSeconds: Math.floor(Date.now() / 1000),
+          ttlSeconds: candidatesCacheTtlSeconds(env),
+        });
+      } catch (err) {
+        safeLog(env, "[admin prime] candidates_ingest_failed", { err: String(err) });
+      }
     } else {
-      const best = await getBestCandidateSource(env, { lat, lng }, { radius_bucket: bucket, categories_key, cell_id });
+      const best = await getBestCandidateSource(env, { lat, lng }, { radius_bucket: bucket, cell_id });
       if (!best) {
         return errorResponse(
           "No cached candidates found for this area. Tap it in the iOS app once or paste candidates JSON.",
@@ -552,11 +816,14 @@ export async function handleAdmin(request, env) {
         );
       }
       candidates = best.candidates;
-      if (best.candidateCellId !== cell_id) {
+      if (best.cell_id !== cell_id) {
+        if (!allowApprox) {
+          return errorResponse("No exact candidates for this cell (ingest first).", 404);
+        }
         candidateSource = {
           accuracy: "approx",
-          source_cell_id: best.candidateCellId,
-          source_distance_m: Math.round(best.distance_m),
+          source_cell_id: best.cell_id,
+          source_distance_m: typeof best.source_distance_m === "number" ? best.source_distance_m : null,
         };
       }
     }
@@ -564,7 +831,6 @@ export async function handleAdmin(request, env) {
     safeLog(env, "[admin prime] request", {
       cell_id,
       radius_bucket: bucket,
-      time_bucket,
       bypass_cache: bypassCache,
       candidates: candidates.length,
     });
@@ -603,10 +869,8 @@ export async function handleAdmin(request, env) {
       source_distance_m: candidateSource.source_distance_m,
     };
 
-    const bucketKey = nearbyKey({ cell_id, radius_bucket: bucket, categories_key, time_bucket });
     const latestKey = nearbyLatestKey({ cell_id, radius_bucket: bucket, categories_key });
-    await kvPutJson(env, bucketKey, cacheValue, CACHE_TTL_SECONDS);
-    await kvPutJson(env, latestKey, cacheValue, CACHE_TTL_SECONDS);
+    await kvPutJson(env, latestKey, cacheValue, nearbyCacheTtlSeconds(env));
 
     return jsonResponse({ status: "ok", cell_id, etag });
   }

@@ -1,0 +1,41 @@
+{
+  "place": {
+    "place_local_id": "test_1",
+    "name": "Test Cafe",
+    "lat": 37.3349,
+    "lng": -122.009,
+    "address_short": "1 Infinite Loop",
+    "primary_category": "restaurant",
+    "raw_categories": ["MKPOICategoryCafe"],
+    "url_exists": true,
+    "phone_exists": false,
+    "open_now": true,
+    "hours_summary": null,
+    "rating": 4.2,
+    "rating_count": 120,
+    "price_level": 2
+  },
+  "review_snippets": [],
+  "nearby_context_candidates": [
+    {
+      "place_local_id": "test_2",
+      "name": "Test Park",
+      "primary_category": "attraction",
+      "lat": 37.3355,
+      "lng": -122.01,
+      "distance_m": 180
+    }
+  ],
+  "area_context": {
+    "neighborhood_name": "Cupertino",
+    "city": "Cupertino",
+    "country": "United States",
+    "area_facts": [
+      {
+        "fact": "Cupertino is a city in Santa Clara County, California.",
+        "source": "Wikipedia: Cupertino"
+      }
+    ]
+  }
+}
+

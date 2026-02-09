@@ -1,0 +1,23 @@
+{
+  "place_local_id": "test_1",
+  "mode": "inference",
+  "headline": "Test Cafe",
+  "why_worth_it": "A food stop near Cupertino.\nWebsite available for current hours/details.\nNext: Test Park.",
+  "nearby_moves": [
+    {
+      "place_local_id": "test_2",
+      "label": "Test Park",
+      "reason": "Nearby attraction option (180 m)."
+    }
+  ],
+  "practical": ["Check the website for current hours/menu/details."],
+  "area_fun_fact": [
+    {
+      "fact": "Cupertino is a city in Santa Clara County, California.",
+      "source": "Wikipedia: Cupertino"
+    }
+  ],
+  "confidence": "medium",
+  "disclosure": "AI inference based only on place metadata and nearby context."
+}
+

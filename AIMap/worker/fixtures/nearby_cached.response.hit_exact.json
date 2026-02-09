@@ -1,0 +1,43 @@
+{
+  "hit": true,
+  "stale": false,
+  "accuracy": "exact",
+  "source_cell_id": null,
+  "source_distance_m": null,
+  "etag": "example_etag_123",
+  "payload": {
+    "query": { "lat": 37.3349, "lng": -122.009, "radius_m": 800 },
+    "candidates": [
+      {
+        "place_local_id": "test_1",
+        "name": "Test Cafe",
+        "lat": 37.3349,
+        "lng": -122.009,
+        "address_short": "1 Infinite Loop",
+        "raw_categories": ["MKPOICategoryCafe"],
+        "url": null,
+        "phone": null,
+        "rating": 4.2,
+        "rating_count": 120,
+        "price_level": 2,
+        "open_now": true
+      }
+    ],
+    "categories": {
+      "restaurants": [
+        {
+          "place_local_id": "test_1",
+          "score": 0.86,
+          "why": "Simple, quick stop with a cafe vibe.",
+          "tags": ["cafe"],
+          "best_for": "coffee",
+          "cautions": []
+        }
+      ],
+      "bars": [],
+      "attractions": [],
+      "shops": []
+    }
+  }
+}
+

@@ -5,6 +5,7 @@ import { getCache, nearbyCacheKey, setCache } from "./cache.js";
 import { kvGetJson, kvPutJson } from "./kv.js";
 import { errorResponse, getBypassCache, jsonResponse, safeLog } from "./utils.js";
 import { parseJsonLoose, sanitizeNearbyResponse, sanitizePlaceDetailResponse } from "./sanitize.js";
+import { placeDetailCacheTtlSeconds } from "./config.js";
 
 export async function handleNearby(request, env) {
   let payloadUnknown;
@@ -143,7 +144,7 @@ export async function handlePlaceDetail(request, env) {
 
   safeLog(env, "[place] ok", { place_local_id: response.place_local_id, mode: response.mode });
 
-  await kvPutJson(env, key, response, 7 * 24 * 60 * 60);
+  await kvPutJson(env, key, response, placeDetailCacheTtlSeconds(env));
   return jsonResponse(response);
 }
 

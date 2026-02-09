@@ -6,11 +6,11 @@ import { kvGetJson, kvPutJson } from "./kv.js";
 import { geohashCenter, geohashNeighbors, haversineDistanceM } from "./geohash.js";
 import { sha256Hex, stableStringify } from "./etag.js";
 import { parseJsonLoose, sanitizeNearbyResponse } from "./sanitize.js";
+import { findBestCandidates, ingestCandidates } from "./candidatesStore.js";
+import { candidatesCacheTtlSeconds, nearbyCacheTtlSeconds, nearbyStaleAfterSeconds } from "./config.js";
 
 const CATEGORY_KEYS = ["restaurants", "bars", "attractions", "shops"];
 
-const CACHE_TTL_SECONDS = 7 * 24 * 60 * 60;
-const STALE_AFTER_SECONDS = 10 * 60;
 const REFRESH_LOCK_SECONDS = 30;
 const MAX_LLM_CANDIDATES = 40;
 const MAX_ITEMS_PER_CATEGORY = 12;
@@ -82,10 +82,9 @@ function parseNearbyCachedRequest(input) {
 
 function parseNearbyRefreshRequest(input) {
   const base = parseNearbyCachedRequest(input);
-  const candidatesValue = Array.isArray(input.candidates) ? input.candidates : [];
-  if (candidatesValue.length === 0) throw new Error("Missing candidates");
-  if (candidatesValue.length > MAX_LLM_CANDIDATES) throw new Error("Too many candidates");
-  const candidates = candidatesValue.map((c) => PlaceCandidateSchema.parse(c));
+  const candidatesValue = Array.isArray(input.candidates) ? input.candidates : null;
+  if (candidatesValue && candidatesValue.length > MAX_LLM_CANDIDATES) throw new Error("Too many candidates");
+  const candidates = candidatesValue ? candidatesValue.map((c) => PlaceCandidateSchema.parse(c)) : null;
   return { ...base, candidates };
 }
 
@@ -146,8 +145,10 @@ export async function handleNearbyCached(request, env) {
   }
 
   const nowSeconds = Math.floor(Date.now() / 1000);
+  const staleAfterSeconds = nearbyStaleAfterSeconds(env);
   const bypassCache = getBypassCache(request);
-  const key = nearbyKey(payload);
+  const latestKey = nearbyLatestKey(payload);
+  const bucketedKey = nearbyKey(payload);
 
   safeLog(env, "[nearby_cached] request", {
     cell_id: payload.cell_id,
@@ -157,31 +158,14 @@ export async function handleNearbyCached(request, env) {
   });
 
   if (!bypassCache) {
-    const exact = await getCacheEntry(env, key, payload.cell_id);
-    if (exact) {
-      const stale = exact.produced_at > 0 ? nowSeconds - exact.produced_at > STALE_AFTER_SECONDS : false;
-      const accuracy = exact.stored_accuracy === "approx" ? "approx" : "exact";
-      return jsonResponse(
-        cacheResponseEnvelope({
-          hit: true,
-          stale,
-          accuracy,
-          source_cell_id: accuracy === "approx" ? exact.stored_source_cell_id ?? payload.cell_id : null,
-          source_distance_m: accuracy === "approx" ? exact.stored_source_distance_m : null,
-          etag: exact.etag,
-          payload: exact.payload,
-        }),
-      );
-    }
-
-    const exactLatestKey = nearbyLatestKey(payload);
-    const exactLatest = await getCacheEntry(env, exactLatestKey, payload.cell_id);
+    const exactLatest = await getCacheEntry(env, latestKey, payload.cell_id);
     if (exactLatest) {
+      const stale = exactLatest.produced_at > 0 ? nowSeconds - exactLatest.produced_at > staleAfterSeconds : false;
       const accuracy = exactLatest.stored_accuracy === "approx" ? "approx" : "exact";
       return jsonResponse(
         cacheResponseEnvelope({
           hit: true,
-          stale: true,
+          stale,
           accuracy,
           source_cell_id: accuracy === "approx" ? exactLatest.stored_source_cell_id ?? payload.cell_id : null,
           source_distance_m: accuracy === "approx" ? exactLatest.stored_source_distance_m : null,
@@ -191,10 +175,29 @@ export async function handleNearbyCached(request, env) {
       );
     }
 
+    // Back-compat: accept older bucketed keys if present.
+    const exactBucketed = await getCacheEntry(env, bucketedKey, payload.cell_id);
+    if (exactBucketed) {
+      const stale =
+        exactBucketed.produced_at > 0 ? nowSeconds - exactBucketed.produced_at > staleAfterSeconds : false;
+      const accuracy = exactBucketed.stored_accuracy === "approx" ? "approx" : "exact";
+      return jsonResponse(
+        cacheResponseEnvelope({
+          hit: true,
+          stale,
+          accuracy,
+          source_cell_id: accuracy === "approx" ? exactBucketed.stored_source_cell_id ?? payload.cell_id : null,
+          source_distance_m: accuracy === "approx" ? exactBucketed.stored_source_distance_m : null,
+          etag: exactBucketed.etag,
+          payload: exactBucketed.payload,
+        }),
+      );
+    }
+
     const neighbors = geohashNeighbors(payload.cell_id);
     const neighborEntries = await Promise.all(
       neighbors.map(async (cell_id) => {
-        const neighborKey = nearbyKey({ ...payload, cell_id });
+        const neighborKey = nearbyLatestKey({ ...payload, cell_id });
         return await getCacheEntry(env, neighborKey, cell_id);
       }),
     );
@@ -202,7 +205,7 @@ export async function handleNearbyCached(request, env) {
     const bestNeighbor = bestCandidateEntry(payload, neighborEntries);
     if (bestNeighbor) {
       const stale =
-        bestNeighbor.produced_at > 0 ? nowSeconds - bestNeighbor.produced_at > STALE_AFTER_SECONDS : false;
+        bestNeighbor.produced_at > 0 ? nowSeconds - bestNeighbor.produced_at > staleAfterSeconds : false;
       return jsonResponse(
         cacheResponseEnvelope({
           hit: true,
@@ -216,36 +219,14 @@ export async function handleNearbyCached(request, env) {
       );
     }
 
-    const neighborLatestEntries = await Promise.all(
-      neighbors.map(async (cell_id) => {
-        const neighborKey = nearbyLatestKey({ ...payload, cell_id });
-        return await getCacheEntry(env, neighborKey, cell_id);
-      }),
-    );
-
-    const bestNeighborLatest = bestCandidateEntry(payload, neighborLatestEntries);
-    if (bestNeighborLatest) {
-      return jsonResponse(
-        cacheResponseEnvelope({
-          hit: true,
-          stale: true,
-          accuracy: "approx",
-          source_cell_id: bestNeighborLatest.cell_id,
-          source_distance_m: Math.round(bestNeighborLatest.distance_m),
-          etag: bestNeighborLatest.etag,
-          payload: bestNeighborLatest.payload,
-        }),
-      );
-    }
-
     const lowerCell = payload.cell_id.length > 1 ? payload.cell_id.slice(0, -1) : "";
     if (lowerCell) {
-      const lowerKey = nearbyKey({ ...payload, cell_id: lowerCell });
+      const lowerKey = nearbyLatestKey({ ...payload, cell_id: lowerCell });
       const lower = await getCacheEntry(env, lowerKey, lowerCell);
       if (lower) {
         const center = geohashCenter(lowerCell);
         const dist = center ? haversineDistanceM({ lat: payload.lat, lng: payload.lng }, center) : null;
-        const stale = lower.produced_at > 0 ? nowSeconds - lower.produced_at > STALE_AFTER_SECONDS : false;
+        const stale = lower.produced_at > 0 ? nowSeconds - lower.produced_at > staleAfterSeconds : false;
         return jsonResponse(
           cacheResponseEnvelope({
             hit: true,
@@ -255,24 +236,6 @@ export async function handleNearbyCached(request, env) {
             source_distance_m: dist ? Math.round(dist) : null,
             etag: lower.etag,
             payload: lower.payload,
-          }),
-        );
-      }
-
-      const lowerLatestKey = nearbyLatestKey({ ...payload, cell_id: lowerCell });
-      const lowerLatest = await getCacheEntry(env, lowerLatestKey, lowerCell);
-      if (lowerLatest) {
-        const center = geohashCenter(lowerCell);
-        const dist = center ? haversineDistanceM({ lat: payload.lat, lng: payload.lng }, center) : null;
-        return jsonResponse(
-          cacheResponseEnvelope({
-            hit: true,
-            stale: true,
-            accuracy: "approx",
-            source_cell_id: lowerCell,
-            source_distance_m: dist ? Math.round(dist) : null,
-            etag: lowerLatest.etag,
-            payload: lowerLatest.payload,
           }),
         );
       }
@@ -315,14 +278,16 @@ export async function handleNearbyRefresh(request, env) {
 
   const bypassCache = getBypassCache(request);
   const nowSeconds = Math.floor(Date.now() / 1000);
-  const key = nearbyKey(payload);
+  const cacheTtlSeconds = nearbyCacheTtlSeconds(env);
+  const candidatesTtlSeconds = candidatesCacheTtlSeconds(env);
+  const key = nearbyLatestKey(payload);
 
   safeLog(env, "[nearby_refresh] request", {
     cell_id: payload.cell_id,
     radius_bucket: payload.radius_bucket,
     time_bucket: payload.time_bucket,
     bypass_cache: bypassCache,
-    candidates: payload.candidates.length,
+    candidates: Array.isArray(payload.candidates) ? payload.candidates.length : 0,
   });
 
   const existing = await kvGetJson(env, key);
@@ -335,6 +300,35 @@ export async function handleNearbyRefresh(request, env) {
     return jsonResponse({ status: "unchanged", etag: existing.etag });
   }
 
+  let candidates = payload.candidates;
+  if (!Array.isArray(candidates) || candidates.length === 0) {
+    const best = await findBestCandidates(
+      env,
+      { lat: payload.lat, lng: payload.lng },
+      { cell_id: payload.cell_id, radius_bucket: payload.radius_bucket },
+    );
+    if (!best) {
+      return errorResponse("Missing candidates for this area (ingest first).", 400);
+    }
+    candidates = best.candidates;
+  }
+
+  if (Array.isArray(payload.candidates) && payload.candidates.length > 0) {
+    try {
+      await ingestCandidates(env, {
+        lat: payload.lat,
+        lng: payload.lng,
+        cell_id: payload.cell_id,
+        radius_bucket: payload.radius_bucket,
+        candidates: payload.candidates,
+        nowSeconds,
+        ttlSeconds: candidatesTtlSeconds,
+      });
+    } catch (err) {
+      safeLog(env, "[nearby_refresh] candidates_ingest_failed", { err: String(err) });
+    }
+  }
+
   let llmText;
   try {
     llmText = await callNearbyLLM({
@@ -344,7 +338,7 @@ export async function handleNearbyRefresh(request, env) {
         lat: payload.lat,
         lng: payload.lng,
         radius_m: payload.radius_m,
-        candidates: payload.candidates,
+        candidates,
         user_context: undefined,
       },
       timeoutMs: 20_000,
@@ -359,7 +353,7 @@ export async function handleNearbyRefresh(request, env) {
     lat: payload.lat,
     lng: payload.lng,
     radius_m: payload.radius_m,
-    candidates: payload.candidates,
+    candidates,
   });
 
   safeLog(env, "[nearby_refresh] sanitize", meta);
@@ -367,7 +361,7 @@ export async function handleNearbyRefresh(request, env) {
   const grouped = clampItems(response);
   const resultPayload = {
     query: grouped.query,
-    candidates: payload.candidates,
+    candidates,
     categories: grouped.categories,
   };
 
@@ -383,18 +377,15 @@ export async function handleNearbyRefresh(request, env) {
     accuracy: "exact",
   };
 
-  await kvPutJson(env, key, cacheValue, CACHE_TTL_SECONDS);
-  await kvPutJson(env, nearbyLatestKey(payload), cacheValue, CACHE_TTL_SECONDS);
+  await kvPutJson(env, key, cacheValue, cacheTtlSeconds);
 
   const lowerCell = payload.cell_id.length > 1 ? payload.cell_id.slice(0, -1) : "";
   if (lowerCell) {
-    const lowerKey = nearbyKey({ ...payload, cell_id: lowerCell });
-    await kvPutJson(env, lowerKey, cacheValue, CACHE_TTL_SECONDS);
     await kvPutJson(
       env,
       nearbyLatestKey({ ...payload, cell_id: lowerCell }),
       cacheValue,
-      CACHE_TTL_SECONDS,
+      cacheTtlSeconds,
     );
   }
 

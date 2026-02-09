@@ -68,6 +68,15 @@ actor BackendClient {
         )
     }
 
+    func candidatesIngest(request: CandidatesIngestRequest) async throws -> CandidatesIngestResponse {
+        try await post(
+            path: "/v1/map/candidates_ingest",
+            body: request,
+            responseType: CandidatesIngestResponse.self,
+            bypassCache: false
+        )
+    }
+
     func placeDetail(request: PlaceDetailRequest, bypassCache: Bool) async throws -> PlaceDetailResponse {
         try await post(
             path: "/v1/map/place_detail",

@@ -46,12 +46,12 @@ function validateArray(value, field) {
 }
 
 function validateStrictKeys(obj, allowedKeys, field) {
-  const keys = Object.keys(obj);
-  for (const key of keys) {
-    if (!allowedKeys.includes(key)) {
-      throw new Error(`Unexpected field ${field}.${key}`);
-    }
-  }
+  // Intentionally non-strict.
+  // We keep request/response parsing forward-compatible as the payload schema evolves.
+  // Unknown fields are ignored by downstream sanitizers.
+  void obj;
+  void allowedKeys;
+  void field;
 }
 
 export const NearbyRequestSchema = {

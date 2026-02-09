@@ -631,6 +631,20 @@ final class MapViewModel: ObservableObject {
                     service.configuration.radiusMeters = radiusMeters
                     let candidates = try await service.fetchCandidates(near: coordinate)
                     let trimmed = Array(candidates.prefix(40))
+
+                    if let client {
+                        let ingest = CandidatesIngestRequest(
+                            lat: coordinate.latitude,
+                            lng: coordinate.longitude,
+                            radiusM: Int(radiusMeters),
+                            cellId: spatialKey.cellId,
+                            candidates: trimmed
+                        )
+                        Task.detached(priority: .utility) {
+                            _ = try? await client.candidatesIngest(request: ingest)
+                        }
+                    }
+
                     await MainActor.run {
                         guard requestId == self.latestTapRequestId else { return }
                         self.lastCandidates = trimmed

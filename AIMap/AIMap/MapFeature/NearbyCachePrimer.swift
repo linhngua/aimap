@@ -55,6 +55,17 @@ actor NearbyCachePrimer {
                     continue
                 }
 
+                if let backendClient {
+                    let ingest = CandidatesIngestRequest(
+                        lat: coordinate.latitude,
+                        lng: coordinate.longitude,
+                        radiusM: Int(radiusMeters),
+                        cellId: key.cellId,
+                        candidates: trimmed
+                    )
+                    _ = try? await backendClient.candidatesIngest(request: ingest)
+                }
+
                 // Store a cheap local grouping immediately so tier0 has something even if backend is unavailable.
                 let mapKitPayload = NearbyPayload(
                     query: NearbyQuery(lat: coordinate.latitude, lng: coordinate.longitude, radiusM: Int(radiusMeters)),
@@ -244,4 +255,3 @@ actor NearbyCachePrimer {
         print("[CachePrimer] \(message)")
     }
 }
-
