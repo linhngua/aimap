@@ -1,0 +1,15 @@
+{
+  "poi_id": "poi_test_123",
+  "images": [
+    {
+      "poi_id": "poi_test_123",
+      "source_url": "https://example.com/og.jpg",
+      "score": 0.83,
+      "thumb_url": "/img/thumbs/poi/poi_test_123/aaaaaaaaaaaaaaaa_thumb.jpg",
+      "full_url": "/img/full/poi/poi_test_123/aaaaaaaaaaaaaaaa.jpg",
+      "r2_key_thumb": "thumbs/poi/poi_test_123/aaaaaaaaaaaaaaaa_thumb.jpg",
+      "r2_key_full": "full/poi/poi_test_123/aaaaaaaaaaaaaaaa.jpg"
+    }
+  ]
+}
+

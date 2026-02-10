@@ -1,0 +1,20 @@
+{
+  "status": "ok",
+  "processed": 2,
+  "results": [
+    {
+      "id": 1,
+      "poi_id": "poi_test_123",
+      "status": "ok",
+      "thumb_r2_key": "thumbs/poi/poi_test_123/aaaaaaaaaaaaaaaa_thumb.jpg"
+    },
+    {
+      "id": 2,
+      "poi_id": "poi_test_456",
+      "status": "error",
+      "error": "Image fetch failed HTTP 404",
+      "thumb_r2_key": null
+    }
+  ]
+}
+

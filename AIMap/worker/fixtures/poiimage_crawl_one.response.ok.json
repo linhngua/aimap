@@ -1,0 +1,11 @@
+{
+  "status": "ok",
+  "poi_id": "poi_test_123",
+  "website_url": "https://example.com",
+  "extracted": 2,
+  "candidates": [
+    "https://example.com/og.jpg",
+    "https://example.com/hero.jpg"
+  ]
+}
+

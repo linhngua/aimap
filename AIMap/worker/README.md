@@ -17,6 +17,14 @@ Cloudflare Worker backend for the AI-enhanced map feature.
   - `GET /admin/api/candidate_cells`
   - `GET /admin/api/cell_status`
   - `POST /admin/api/prime`
+- POI images (D1 + R2):
+  - `GET  /admin/poiimage` (admin UI)
+  - `GET  /admin/poiimage/status`
+  - `POST /admin/poiimage/crawl_one` (manual crawl one POI website; no LLM)
+  - `POST /admin/poiimage/thumb_batch` (generate low-quality thumbs; no LLM)
+  - `POST /admin/poiimage/filter_batch` (admin-only LLM filtering; thumb-only)
+  - `GET  /api/poi/:poi_id/images` (approved images only, max 3)
+  - `GET  /img/:r2_key` (R2 proxy w/ caching headers)
 
 ## Environment
 
@@ -24,6 +32,7 @@ Configure these secrets/bindings:
 
 - `OPENAI_API_KEY` (required for LLM endpoints)
 - `OPENAI_MODEL` (optional)
+- `OPENAI_IMAGE_MODEL` (optional; POI image filtering; must support vision)
 - `OPENAI_BASE_URL` (optional)
 - `MODE=Test` (optional; enables verbose logs)
 - `ADMIN_TOKEN` (optional; enables `/admin` APIs; must be non-empty)
@@ -31,6 +40,11 @@ Configure these secrets/bindings:
 Cache storage:
 
 - `MAP_CACHE` (Cloudflare KV namespace binding; recommended for production)
+
+POI image storage:
+
+- `DB` (Cloudflare D1 binding; required for POI image system)
+- `POI_IMAGES` (Cloudflare R2 bucket binding; required for POI image system)
 
 Cache tuning (optional):
 
@@ -63,6 +77,44 @@ The worker includes a simple UI for visualizing cached cells and priming them vi
 - Visit `GET /admin`
 - Set `ADMIN_TOKEN` in your Worker environment and enter it in the UI (sent as `x-admin-token`)
 - Auto Prime runs in your browser session and prioritizes missing cells; it can only prime cells that already have ingested candidates.
+
+## POI image system (cron crawl + admin filter)
+
+Two separate pipelines:
+
+1) **Cron crawl (no LLM):** fetch POI websites daily, extract up to 5 candidate image URLs, and store them in D1.
+2) **Admin-only LLM filter (thumb-only):** generate 256px low-quality thumbs in R2, then classify thumbs with a vision model; only SAFE images get the full image stored + approved in D1.
+
+### Setup
+
+1) Create/bind D1 + apply schema:
+
+```bash
+wrangler d1 execute <YOUR_DB_NAME> --file=worker/d1/poi_images.sql
+```
+
+2) Create/bind R2 bucket `POI_IMAGES` (see `worker/wrangler.toml`).
+
+3) Set env vars:
+
+- `ADMIN_TOKEN` (required for admin APIs)
+- `OPENAI_API_KEY` + `OPENAI_IMAGE_MODEL` (required for `/admin/poiimage/filter_batch`)
+
+4) Seed POIs to crawl:
+
+- Visit `GET /admin/poiimage`, enter token, then run “Crawl one” for a POI (`poi_id` + `website_url`).
+- Cron uses `poi_websites` as the crawl target list.
+
+### Cron schedule
+
+`worker/wrangler.toml` includes an example cron trigger:
+
+- Every 5 minutes during a 2-hour daily window (UTC).
+
+Notes:
+
+- Cron **never** calls the LLM.
+- Thumbnail generation uses Cloudflare’s `cf.image` resizing; ensure Image Resizing is enabled for best results.
 
 ## Local dev
 

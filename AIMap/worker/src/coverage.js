@@ -29,12 +29,12 @@ export function coverageRegionFor(lat, lng) {
 }
 
 export function isSupportedLatLng(lat, lng) {
-  return coverageRegionFor(lat, lng) !== null;
+  // Coverage is worldwide. We keep this helper for basic coordinate sanity.
+  return Number.isFinite(lat) && Number.isFinite(lng);
 }
 
 export function outOfCoverageMessage() {
-  const names = SUPPORTED_REGIONS.map((region) => region.title).join(" and ");
-  return `AIMap will be available soon in your area. Currently supported: ${names}.`;
+  return "AIMap is available worldwide.";
 }
 
 async function bumpCounter(env, key, sample) {

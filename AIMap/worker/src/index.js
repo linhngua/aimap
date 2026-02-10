@@ -3,6 +3,8 @@ import { handleNearbyCached, handleNearbyRefresh } from "./nearbyPipeline.js";
 import { handleCandidatesIngest } from "./candidatesHandler.js";
 import { handleAdmin } from "./admin.js";
 import { handleCoverageReport } from "./coverageHandler.js";
+import { runPoiImageCron } from "./poiImageCron.js";
+import { handleImageProxy, handlePoiImagesApi } from "./poiImageApi.js";
 import { errorResponse } from "./utils.js";
 
 function withCors(response) {
@@ -22,6 +24,13 @@ export default {
     const url = new URL(request.url);
     if (url.pathname === "/admin" || url.pathname.startsWith("/admin/")) {
       return withCors(await handleAdmin(request, env));
+    }
+
+    if (request.method === "GET" && url.pathname.startsWith("/api/poi/") && url.pathname.endsWith("/images")) {
+      return withCors(await handlePoiImagesApi(request, env));
+    }
+    if (request.method === "GET" && url.pathname.startsWith("/img/")) {
+      return withCors(await handleImageProxy(request, env));
     }
 
     if (request.method !== "POST") {
@@ -54,5 +63,14 @@ export default {
     }
 
     return withCors(errorResponse("Not found", 404));
+  },
+  async scheduled(event, env, ctx) {
+    void event;
+    const promise = runPoiImageCron(env).catch((err) => {
+      // eslint-disable-next-line no-console
+      console.log("[poiimage] cron error", err?.stack ?? String(err));
+    });
+    if (ctx?.waitUntil) ctx.waitUntil(promise);
+    else await promise;
   },
 };

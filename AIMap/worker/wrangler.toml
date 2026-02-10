@@ -4,6 +4,25 @@ compatibility_date = "2026-02-07"
 
 [vars]
 OPENAI_MODEL = "gpt-4.1-mini"
+OPENAI_IMAGE_MODEL = "gpt-4o-mini"
+
+# POI image system (D1 + R2)
+# - Run `wrangler d1 execute <db> --file=worker/d1/poi_images.sql`
+# - Replace database_id + bucket_name with your resources.
+[[d1_databases]]
+binding = "DB"
+database_name = "aimap"
+database_id = "poi_image"
+
+[[r2_buckets]]
+binding = "POI_IMAGES"
+bucket_name = "aimap-poi-images"
+preview_bucket_name = "aimap-poi-images-preview"
+
+# Cron: every 5 minutes during a 2-hour daily window (UTC).
+# You can adjust hours to your preferred window.
+[triggers]
+crons = ["*/5 10-11 * * *"]
 
 [observability]
 enabled = false

@@ -1,0 +1,23 @@
+{
+  "status": "ok",
+  "processed": 2,
+  "results": [
+    {
+      "id": 1,
+      "poi_id": "poi_test_123",
+      "verdict": "SAFE",
+      "confidence": 0.83,
+      "thumb_r2_key": "thumbs/poi/poi_test_123/aaaaaaaaaaaaaaaa_thumb.jpg",
+      "full_r2_key": "full/poi/poi_test_123/aaaaaaaaaaaaaaaa.jpg",
+      "status": "ok"
+    },
+    {
+      "id": 2,
+      "poi_id": "poi_test_456",
+      "status": "error",
+      "error": "Thumb missing in R2",
+      "thumb_r2_key": "thumbs/poi/poi_test_456/bbbbbbbbbbbbbbbb_thumb.jpg"
+    }
+  ]
+}
+

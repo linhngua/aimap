@@ -269,7 +269,9 @@ enum Coverage {
     }
 
     static func isSupported(_ coordinate: CLLocationCoordinate2D) -> Bool {
-        supportedRegion(for: coordinate) != nil
+        // Coverage is worldwide.
+        _ = coordinate
+        return true
     }
 
     static func nearestSupportedRegion(to coordinate: CLLocationCoordinate2D) -> CoverageRegion {
@@ -283,8 +285,7 @@ enum Coverage {
     }
 
     static func outOfCoverageMessage() -> String {
-        let names = supportedRegions.map(\.title).joined(separator: " and ")
-        return "AIMap will be available soon in your area. Currently supported: \(names)."
+        "AIMap is available worldwide."
     }
 }
 

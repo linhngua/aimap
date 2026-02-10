@@ -10,6 +10,7 @@ import { candidatesLatestKey, findBestCandidates, ingestCandidates } from "./can
 import { candidatesCacheTtlSeconds, nearbyCacheTtlSeconds, nearbyStaleAfterSeconds } from "./config.js";
 import { isSupportedLatLng, outOfCoverageMessage, recordOutOfCoverageRequest } from "./coverage.js";
 import { queuePrime } from "./primeQueue.js";
+import { maybeHandlePoiImageAdmin } from "./poiImageAdmin.js";
 
 const FIXED_CATEGORIES = ["restaurants", "bars", "attractions", "shops"];
 const MAX_LLM_CANDIDATES = 40;
@@ -759,6 +760,9 @@ export async function handleAdmin(request, env) {
   if (request.method === "GET" && (url.pathname === "/admin" || url.pathname === "/admin/")) {
     return await handleAdminPage();
   }
+
+  const poiImageHandled = await maybeHandlePoiImageAdmin(request, env);
+  if (poiImageHandled) return poiImageHandled;
 
   if (url.pathname === "/admin/api/admin_status" && request.method === "GET") {
     const enabled = typeof env?.ADMIN_TOKEN === "string" && env.ADMIN_TOKEN.trim().length > 0;
