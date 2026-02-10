@@ -98,4 +98,40 @@ enum Geohash {
         let idx = neighborTable.distance(from: neighborTable.startIndex, to: index)
         return parent + String(base32[idx])
     }
+
+    static func decodeBounds(_ hash: String) -> (latMin: Double, latMax: Double, lngMin: Double, lngMax: Double)? {
+        let trimmed = hash.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !trimmed.isEmpty else { return nil }
+
+        var latRange = (-90.0, 90.0)
+        var lngRange = (-180.0, 180.0)
+        var isEven = true
+
+        for ch in trimmed {
+            guard let index = base32.firstIndex(of: ch) else { return nil }
+            let value = base32.distance(from: base32.startIndex, to: index)
+
+            for mask in bits {
+                let bitSet = (value & mask) != 0
+                if isEven {
+                    let mid = (lngRange.0 + lngRange.1) / 2
+                    if bitSet {
+                        lngRange.0 = mid
+                    } else {
+                        lngRange.1 = mid
+                    }
+                } else {
+                    let mid = (latRange.0 + latRange.1) / 2
+                    if bitSet {
+                        latRange.0 = mid
+                    } else {
+                        latRange.1 = mid
+                    }
+                }
+                isEven.toggle()
+            }
+        }
+
+        return (latRange.0, latRange.1, lngRange.0, lngRange.1)
+    }
 }

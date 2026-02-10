@@ -1,7 +1,7 @@
 function requireDb(env) {
-  const db = env?.DB;
+  const db = env?.IMAGE_CELL_DB ?? env?.DB;
   if (!db || typeof db.prepare !== "function") {
-    throw new Error("Missing D1 binding DB");
+    throw new Error("Missing D1 binding IMAGE_CELL_DB");
   }
   return db;
 }

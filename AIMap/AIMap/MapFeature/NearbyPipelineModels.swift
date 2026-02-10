@@ -76,3 +76,17 @@ struct CandidatesIngestResponse: Codable, Hashable {
     let etag: String?
     let storedCandidates: Int?
 }
+
+struct MapOverlayRequest: Codable, Hashable {
+    let lat: Double
+    let lng: Double
+    let radiusM: Int
+}
+
+struct MapOverlayResponse: Codable, Hashable {
+    let query: NearbyQuery
+    let cellPrefix: String
+    let cachedCells: [String]
+    let imageCells: [String]
+    let windowDays: Int
+}

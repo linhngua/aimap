@@ -29,7 +29,8 @@ function geohashPrecisionForRadiusBucket(bucket) {
 }
 
 async function seedPoiWebsitesFromCandidates(env, candidates) {
-  const hasDb = env?.DB && typeof env.DB.prepare === "function";
+  const db = env?.IMAGE_CELL_DB ?? env?.DB;
+  const hasDb = db && typeof db.prepare === "function";
   if (!hasDb) return;
   if (!Array.isArray(candidates) || candidates.length === 0) return;
 

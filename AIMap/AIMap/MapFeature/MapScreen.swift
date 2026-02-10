@@ -16,6 +16,7 @@ struct MapScreen: View {
                     region: $viewModel.region,
                     style: mapStyle,
                     pins: pins,
+                    areaCellIds: viewModel.cachedAreaCellIds,
                     dropPinCoordinate: viewModel.lastTappedCoordinate,
                     onTap: { coordinate in
                         viewModel.handleMapTap(coordinate)

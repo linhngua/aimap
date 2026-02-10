@@ -95,6 +95,15 @@ actor BackendClient {
         )
     }
 
+    func overlay(request: MapOverlayRequest) async throws -> MapOverlayResponse {
+        try await post(
+            path: "/v1/map/overlay",
+            body: request,
+            responseType: MapOverlayResponse.self,
+            bypassCache: false
+        )
+    }
+
     func coverageReport(request: CoverageReportRequest) async throws -> CoverageReportResponse {
         try await post(
             path: "/v1/map/coverage/report",

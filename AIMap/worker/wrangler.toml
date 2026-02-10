@@ -10,14 +10,20 @@ OPENAI_IMAGE_MODEL = "gpt-4o-mini"
 # - Run `wrangler d1 execute <db> --file=worker/d1/poi_images.sql`
 # - Replace database_id + bucket_name with your resources.
 [[d1_databases]]
-binding = "DB"
-database_name = "aimap"
-database_id = "poi_image"
+binding = "IMAGE_CELL_DB"
+database_name = "poi_image"
+database_id = "6471c399-89bf-4e41-a481-e1b7d6c22d4b"
 
 [[r2_buckets]]
 binding = "POI_IMAGES"
 bucket_name = "aimap-poi-images"
 preview_bucket_name = "aimap-poi-images-preview"
+
+# Optional but recommended KV (cache):
+# [[kv_namespaces]]
+# binding = "MAP_CACHE"
+# id = "REPLACE_ME"
+# preview_id = "REPLACE_ME"
 
 # Cron: every 5 minutes during a 2-hour daily window (UTC).
 # You can adjust hours to your preferred window.

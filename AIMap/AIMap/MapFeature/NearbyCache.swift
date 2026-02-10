@@ -57,6 +57,46 @@ actor NearbyCache {
         return nil
     }
 
+    func recentCellIds(prefix: String, since: Date, limit: Int = 300) -> [String] {
+        guard let db else { return [] }
+        let trimmedPrefix = prefix.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedPrefix.isEmpty else { return [] }
+
+        let sinceSeconds = Int64(since.timeIntervalSince1970)
+        let safeLimit = max(1, min(800, limit))
+
+        let sql = """
+        SELECT cell_id, MAX(produced_at) AS max_produced
+        FROM nearby_cache
+        WHERE cell_id LIKE ? AND produced_at >= ?
+        GROUP BY cell_id
+        ORDER BY max_produced DESC
+        LIMIT ?;
+        """
+
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            sqlite3_finalize(statement)
+            return []
+        }
+        defer { sqlite3_finalize(statement) }
+
+        sqlite3_bind_text(statement, 1, ("\(trimmedPrefix)%" as NSString).utf8String, -1, SQLITE_TRANSIENT)
+        sqlite3_bind_int64(statement, 2, sinceSeconds)
+        sqlite3_bind_int(statement, 3, Int32(safeLimit))
+
+        var results: [String] = []
+        results.reserveCapacity(safeLimit)
+
+        while sqlite3_step(statement) == SQLITE_ROW {
+            let cellId = sqlite3_column_text(statement, 0).flatMap { String(cString: $0) } ?? ""
+            if !cellId.isEmpty {
+                results.append(cellId)
+            }
+        }
+        return results
+    }
+
     func upsert(
         payload: NearbyPayload,
         spatialKey: NearbySpatialKey,

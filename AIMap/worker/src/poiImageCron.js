@@ -12,8 +12,9 @@ function utcDateString(now = new Date()) {
 }
 
 export async function runPoiImageCron(env, { maxPoisPerTick = 10, timeBudgetMs = 20_000 } = {}) {
-  if (!env?.DB) {
-    safeLog(env, "[poiimage] cron skipped: missing DB");
+  const db = env?.IMAGE_CELL_DB ?? env?.DB;
+  if (!db || typeof db.prepare !== "function") {
+    safeLog(env, "[poiimage] cron skipped: missing IMAGE_CELL_DB");
     return { status: "skipped", reason: "missing_db" };
   }
 
@@ -58,4 +59,3 @@ export async function runPoiImageCron(env, { maxPoisPerTick = 10, timeBudgetMs =
   safeLog(env, "[poiimage] cron tick", { processed, last_poi_id: cursor.last_poi_id });
   return { status: "ok", processed, last_poi_id: cursor.last_poi_id };
 }
-

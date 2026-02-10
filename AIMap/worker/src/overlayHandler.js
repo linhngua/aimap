@@ -21,7 +21,7 @@ function parseNearbyLatestKey(name) {
 }
 
 function requireDb(env) {
-  const db = env?.DB;
+  const db = env?.IMAGE_CELL_DB ?? env?.DB;
   if (!db || typeof db.prepare !== "function") return null;
   return db;
 }
@@ -100,4 +100,3 @@ export async function handleOverlay(request, env) {
     window_days: 7,
   });
 }
-

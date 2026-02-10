@@ -122,9 +122,12 @@ final class MapViewModel: ObservableObject {
 
     @Published var isShowingSettings: Bool = false
 
+    @Published private(set) var cachedAreaCellIds: [String] = []
+
     private var placeTask: Task<Void, Never>?
     private var areaFactsTask: Task<Void, Never>?
     private var locationSearchTask: Task<Void, Never>?
+    private var overlayTask: Task<Void, Never>?
 
     private let mapKitService = MapKitNearbySearchService()
     private let nearbyCache = NearbyCache()
@@ -655,6 +658,11 @@ final class MapViewModel: ObservableObject {
         nearbyIsStale = false
 
         pipelineTask?.cancel()
+        overlayTask?.cancel()
+        overlayTask = Task { [weak self] in
+            guard let self else { return }
+            await self.refreshCachedAreaOverlay(requestId: requestId, coordinate: coordinate)
+        }
         guard Coverage.isSupported(coordinate) else {
             nearbyPayload = nil
             nearbyTier = nil
@@ -670,6 +678,35 @@ final class MapViewModel: ObservableObject {
         }
         pipelineTask = Task { @MainActor in
             await runNearbyPipeline(requestId: requestId, coordinate: coordinate, bypassCache: bypassCache)
+        }
+    }
+
+    private func refreshCachedAreaOverlay(requestId: Int, coordinate: CLLocationCoordinate2D) async {
+        let prefix = Geohash.encode(latitude: coordinate.latitude, longitude: coordinate.longitude, precision: 4)
+        let since = Date().addingTimeInterval(-7 * 24 * 60 * 60)
+
+        let local = await nearbyCache.recentCellIds(prefix: prefix, since: since, limit: 250)
+        guard requestId == latestTapRequestId else { return }
+
+        var merged = Set(local.filter { $0.count >= 5 })
+        cachedAreaCellIds = Array(merged).sorted()
+
+        guard let client = try? makeBackendClient() else { return }
+        do {
+            let response = try await client.overlay(
+                request: MapOverlayRequest(
+                    lat: coordinate.latitude,
+                    lng: coordinate.longitude,
+                    radiusM: Int(radiusMeters)
+                )
+            )
+            guard requestId == latestTapRequestId else { return }
+            merged.formUnion(response.cachedCells.filter { $0.count >= 5 })
+            merged.formUnion(response.imageCells.filter { $0.count >= 5 })
+            let sorted = Array(merged).sorted()
+            cachedAreaCellIds = Array(sorted.prefix(250))
+        } catch {
+            // ignore overlay errors
         }
     }
 

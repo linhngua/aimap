@@ -16,6 +16,7 @@ struct LuxuryMapView: UIViewRepresentable {
 
     var style: LuxuryMapStyle
     var pins: [LuxuryMapPin]
+    var areaCellIds: [String]
     var dropPinCoordinate: CLLocationCoordinate2D?
     var onTap: (CLLocationCoordinate2D) -> Void
     var onSelectPin: (String) -> Void
@@ -43,7 +44,7 @@ struct LuxuryMapView: UIViewRepresentable {
             mapView.setRegion(region, animated: true)
         }
 
-        context.coordinator.render(pins: pins, dropPinCoordinate: dropPinCoordinate, on: mapView)
+        context.coordinator.render(pins: pins, dropPinCoordinate: dropPinCoordinate, areaCellIds: areaCellIds, on: mapView)
     }
 
     func makeCoordinator() -> Coordinator {
@@ -64,6 +65,7 @@ struct LuxuryMapView: UIViewRepresentable {
         private let onSelectPin: (String) -> Void
 
         private var pendingRemovals: Set<String> = []
+        private var lastAreaCellIds: Set<String> = []
 
         init(region: Binding<MKCoordinateRegion>, style: LuxuryMapStyle, onTap: @escaping (CLLocationCoordinate2D) -> Void, onSelectPin: @escaping (String) -> Void) {
             _region = region
@@ -82,7 +84,7 @@ struct LuxuryMapView: UIViewRepresentable {
             onTap(coordinate)
         }
 
-        func render(pins: [LuxuryMapPin], dropPinCoordinate: CLLocationCoordinate2D?, on mapView: MKMapView) {
+        func render(pins: [LuxuryMapPin], dropPinCoordinate: CLLocationCoordinate2D?, areaCellIds: [String], on mapView: MKMapView) {
             let desiredById = Dictionary(uniqueKeysWithValues: pins.map { ($0.id, $0) })
 
             let existing = mapView.annotations.compactMap { $0 as? LuxuryPlaceAnnotation }
@@ -125,6 +127,7 @@ struct LuxuryMapView: UIViewRepresentable {
             }
 
             renderDropPin(coordinate: dropPinCoordinate, on: mapView)
+            renderAreaOverlays(cellIds: areaCellIds, on: mapView)
         }
 
         private func removeAnnotation(_ annotation: LuxuryPlaceAnnotation, from mapView: MKMapView) {
@@ -169,6 +172,45 @@ struct LuxuryMapView: UIViewRepresentable {
             }
         }
 
+        private func renderAreaOverlays(cellIds: [String], on mapView: MKMapView) {
+            let desired = Set(cellIds.filter { !$0.isEmpty })
+            if desired == lastAreaCellIds { return }
+            lastAreaCellIds = desired
+
+            let existingPolygons = mapView.overlays.compactMap { $0 as? MKPolygon }.filter {
+                ($0.title ?? "").hasPrefix("aimap_cell:")
+            }
+            let existingByCell = Dictionary(uniqueKeysWithValues: existingPolygons.compactMap { polygon -> (String, MKPolygon)? in
+                guard let title = polygon.title, title.hasPrefix("aimap_cell:") else { return nil }
+                let cellId = String(title.dropFirst("aimap_cell:".count))
+                guard !cellId.isEmpty else { return nil }
+                return (cellId, polygon)
+            })
+
+            let existingIds = Set(existingByCell.keys)
+            let toAdd = desired.subtracting(existingIds)
+            let toRemove = existingIds.subtracting(desired)
+
+            for cellId in toRemove {
+                if let polygon = existingByCell[cellId] {
+                    mapView.removeOverlay(polygon)
+                }
+            }
+
+            for cellId in toAdd {
+                guard let bounds = Geohash.decodeBounds(cellId) else { continue }
+                var coords = [
+                    CLLocationCoordinate2D(latitude: bounds.latMin, longitude: bounds.lngMin),
+                    CLLocationCoordinate2D(latitude: bounds.latMax, longitude: bounds.lngMin),
+                    CLLocationCoordinate2D(latitude: bounds.latMax, longitude: bounds.lngMax),
+                    CLLocationCoordinate2D(latitude: bounds.latMin, longitude: bounds.lngMax),
+                ]
+                let polygon = MKPolygon(coordinates: &coords, count: coords.count)
+                polygon.title = "aimap_cell:\(cellId)"
+                mapView.addOverlay(polygon, level: .aboveRoads)
+            }
+        }
+
         private func isTapOnAnnotationView(_ view: UIView?) -> Bool {
             var current = view
             while let unwrapped = current {
@@ -206,6 +248,17 @@ struct LuxuryMapView: UIViewRepresentable {
         func mapView(_ mapView: MKMapView, didSelect view: MKAnnotationView) {
             guard let annotation = view.annotation as? LuxuryPlaceAnnotation else { return }
             onSelectPin(annotation.placeLocalId)
+        }
+
+        func mapView(_ mapView: MKMapView, rendererFor overlay: MKOverlay) -> MKOverlayRenderer {
+            guard let polygon = overlay as? MKPolygon else { return MKOverlayRenderer(overlay: overlay) }
+            guard let title = polygon.title, title.hasPrefix("aimap_cell:") else { return MKOverlayRenderer(overlay: overlay) }
+
+            let renderer = MKPolygonRenderer(polygon: polygon)
+            renderer.fillColor = UIColor(white: 0.95, alpha: 0.08)
+            renderer.strokeColor = UIColor(white: 0.95, alpha: 0.16)
+            renderer.lineWidth = max(0.5, 1.0 / UIScreen.main.scale)
+            return renderer
         }
 
         func mapView(_ mapView: MKMapView, didAdd views: [MKAnnotationView]) {

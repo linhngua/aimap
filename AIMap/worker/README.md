@@ -43,7 +43,7 @@ Cache storage:
 
 POI image storage:
 
-- `DB` (Cloudflare D1 binding; required for POI image system)
+- `IMAGE_CELL_DB` (Cloudflare D1 binding; required for POI image system)
 - `POI_IMAGES` (Cloudflare R2 bucket binding; required for POI image system)
 
 Cache tuning (optional):
