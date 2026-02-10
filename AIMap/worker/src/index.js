@@ -14,7 +14,7 @@ function withCors(response) {
 }
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     if (request.method === "OPTIONS") {
       return withCors(new Response(null, { status: 204 }));
     }
@@ -43,7 +43,7 @@ export default {
       return withCors(await handleNearbyCached(request, env));
     }
     if (url.pathname === "/v1/map/candidates_ingest") {
-      return withCors(await handleCandidatesIngest(request, env));
+      return withCors(await handleCandidatesIngest(request, env, ctx));
     }
     if (url.pathname === "/v1/map/nearby_refresh") {
       if (!env.OPENAI_API_KEY) return withCors(errorResponse("Missing OPENAI_API_KEY", 500));

@@ -9,6 +9,7 @@ import { errorResponse, getBypassCache, jsonResponse, safeLog } from "./utils.js
 import { candidatesLatestKey, findBestCandidates, ingestCandidates } from "./candidatesStore.js";
 import { candidatesCacheTtlSeconds, nearbyCacheTtlSeconds, nearbyStaleAfterSeconds } from "./config.js";
 import { isSupportedLatLng, outOfCoverageMessage, recordOutOfCoverageRequest } from "./coverage.js";
+import { queuePrime } from "./primeQueue.js";
 
 const FIXED_CATEGORIES = ["restaurants", "bars", "attractions", "shops"];
 const MAX_LLM_CANDIDATES = 40;
@@ -189,7 +190,7 @@ function adminHtml() {
             <button id="prime" class="primary" disabled>Prime selected cell</button>
             <div class="status muted small">
               Priming uses ingested candidates (from iOS taps) when available (no invented places).
-              If a cell has no candidates yet, paste candidates JSON below or tap it in the iOS app once.
+              If a cell has no candidates yet, priming will queue and run automatically after candidates are ingested (or paste candidates JSON below).
             </div>
             <textarea id="candidates" placeholder='Optional: paste candidates array JSON (max 40)...'></textarea>
             <button id="primeWithCandidates" class="danger" disabled>Prime with pasted candidates</button>
@@ -598,7 +599,11 @@ function adminHtml() {
           headers: { "content-type": "application/json", ...adminHeaders() },
           body: JSON.stringify(body)
         });
-        statusLine(\`Primed: \${data.cell_id} • \${data.status} • etag=\${(data.etag||"").slice(0,10)}…\`);
+        if (data && data.status === "queued") {
+          statusLine(data.message || \`Queued: \${data.cell_id} • waiting for candidates\`);
+        } else {
+          statusLine(\`Primed: \${data.cell_id} • \${data.status} • etag=\${(data.etag||"").slice(0,10)}…\`);
+        }
         await refreshOverlay();
       }
 
@@ -981,17 +986,28 @@ export async function handleAdmin(request, env) {
       } catch (err) {
         safeLog(env, "[admin prime] candidates_ingest_failed", { err: String(err) });
       }
-    } else {
-      const best = await getBestCandidateSource(env, { lat, lng }, { radius_bucket: bucket, cell_id });
-      if (!best) {
-        return errorResponse(
-          "No cached candidates found for this area. Tap it in the iOS app once or paste candidates JSON.",
-          404,
-        );
-      }
-      candidates = best.candidates;
-      if (best.cell_id !== cell_id) {
-        if (!allowApprox) {
+	    } else {
+	      const best = await getBestCandidateSource(env, { lat, lng }, { radius_bucket: bucket, cell_id });
+	      if (!best) {
+	        await queuePrime(env, {
+	          lat,
+	          lng,
+	          radius_m,
+	          cell_id,
+	          radius_bucket: bucket,
+	          categories,
+	          categories_key,
+	        });
+	        return jsonResponse({
+	          status: "queued",
+	          cell_id,
+	          message:
+	            "Queued. This cell will be primed automatically after candidates are ingested (tap it once in the iOS app or paste candidates JSON).",
+	        }, 202);
+	      }
+	      candidates = best.candidates;
+	      if (best.cell_id !== cell_id) {
+	        if (!allowApprox) {
           return errorResponse("No exact candidates for this cell (ingest first).", 404);
         }
         candidateSource = {

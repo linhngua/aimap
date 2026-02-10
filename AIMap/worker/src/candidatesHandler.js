@@ -4,8 +4,10 @@ import { geohashEncode } from "./geohash.js";
 import { ingestCandidates } from "./candidatesStore.js";
 import { candidatesCacheTtlSeconds } from "./config.js";
 import { isSupportedLatLng, outOfCoverageMessage, recordOutOfCoverageRequest } from "./coverage.js";
+import { processQueuedPrimeIfAny } from "./primeQueue.js";
 
 const MAX_LLM_CANDIDATES = 40;
+const FIXED_CATEGORIES_KEY = "abrs";
 
 function isObject(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -24,7 +26,7 @@ function geohashPrecisionForRadiusBucket(bucket) {
   return 5;
 }
 
-export async function handleCandidatesIngest(request, env) {
+export async function handleCandidatesIngest(request, env, ctx) {
   let payloadUnknown;
   try {
     payloadUnknown = await request.json();
@@ -80,6 +82,21 @@ export async function handleCandidatesIngest(request, env) {
       nowSeconds,
       ttlSeconds: candidatesCacheTtlSeconds(env),
     });
+
+    if (env.OPENAI_API_KEY) {
+      const primePromise = processQueuedPrimeIfAny(env, {
+        cell_id,
+        radius_bucket: bucket,
+        categories_key: FIXED_CATEGORIES_KEY,
+        candidates: stored.candidates,
+      }).catch((err) => safeLog(env, "[candidates_ingest] prime_queue_failed", { err: String(err) }));
+      if (ctx && typeof ctx.waitUntil === "function") {
+        ctx.waitUntil(primePromise);
+      } else {
+        await primePromise;
+      }
+    }
+
     return jsonResponse({ status: "ok", cell_id, radius_bucket: bucket, etag: stored.etag, stored_candidates: stored.candidates.length });
   } catch (err) {
     return errorResponse("Failed to ingest candidates", 500, String(err));
