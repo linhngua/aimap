@@ -2,57 +2,16 @@ import MapKit
 import SwiftUI
 import UIKit
 
-private actor PlaceProfileImageService {
-    static let shared = PlaceProfileImageService()
-
-    private let cache = NSCache<NSString, UIImage>()
-    private var inFlight: [String: Task<UIImage?, Never>] = [:]
-
-    func image(for place: CandidatePlace, size: CGSize) async -> UIImage? {
-        let key = "\(place.placeLocalId)|\(Int(size.width))x\(Int(size.height))"
-        if let cached = cache.object(forKey: key as NSString) { return cached }
-        if let existing = inFlight[key] { return await existing.value }
-
-        let task = Task<UIImage?, Never> {
-            let scene = await fetchLookAroundScene(coordinate: place.coordinate)
-            guard let scene else { return nil }
-            let image = await fetchLookAroundSnapshot(scene: scene, size: size)
-            return image
-        }
-        inFlight[key] = task
-        let image = await task.value
-        inFlight[key] = nil
-        if let image {
-            cache.setObject(image, forKey: key as NSString)
-        }
-        return image
-    }
-
-    private func fetchLookAroundScene(coordinate: CLLocationCoordinate2D) async -> MKLookAroundScene? {
-        await withCheckedContinuation { continuation in
-            let request = MKLookAroundSceneRequest(coordinate: coordinate)
-            request.getSceneWithCompletionHandler { scene, _ in
-                continuation.resume(returning: scene)
-            }
-        }
-    }
-
-    private func fetchLookAroundSnapshot(scene: MKLookAroundScene, size: CGSize) async -> UIImage? {
-        await withCheckedContinuation { continuation in
-            let options = MKLookAroundSnapshotter.Options()
-            options.size = size
-            let snapshotter = MKLookAroundSnapshotter(scene: scene, options: options)
-            snapshotter.getSnapshotWithCompletionHandler { snapshot, _ in
-                continuation.resume(returning: snapshot?.image)
-            }
-        }
-    }
-}
-
 struct PlaceProfileImage: View {
     let place: CandidatePlace
+    let mapItem: MKMapItem?
+    let category: POICategory
+
+    private let targetSize = CGSize(width: 520, height: 300)
+    private let accentColor: UIColor = LuxuryMapStyle.premium.accentColor
 
     @State private var image: UIImage?
+    @State private var source: POIImageSourceType = .placeholder
 
     var body: some View {
         ZStack {
@@ -60,13 +19,37 @@ struct PlaceProfileImage: View {
                 Image(uiImage: image)
                     .resizable()
                     .scaledToFill()
+                    .transition(.opacity)
             } else {
                 placeholder
             }
         }
         .clipped()
-        .task(id: place.placeLocalId) {
-            image = await PlaceProfileImageService.shared.image(for: place, size: CGSize(width: 520, height: 300))
+        .task(id: taskKey) {
+            await resolve()
+        }
+        .accessibilityLabel(accessibilityLabel)
+    }
+
+    private var taskKey: String {
+        "\(place.placeLocalId)|\(Int(targetSize.width))x\(Int(targetSize.height))"
+    }
+
+    private func resolve() async {
+        let result = await POIImageResolver.shared.resolve(
+            placeLocalId: place.placeLocalId,
+            mapItem: mapItem,
+            coordinate: place.coordinate,
+            category: category,
+            targetSize: targetSize,
+            accentColor: accentColor
+        )
+
+        await MainActor.run {
+            source = result.source
+            withAnimation(.easeInOut(duration: 0.18)) {
+                image = result.image
+            }
         }
     }
 
@@ -81,18 +64,18 @@ struct PlaceProfileImage: View {
                 endPoint: .bottomTrailing
             )
 
-            Image(systemName: iconName)
+            Image(systemName: category.systemImage)
                 .font(.system(size: 28, weight: .semibold))
                 .foregroundStyle(.white.opacity(0.82))
         }
     }
 
-    private var iconName: String {
-        switch place.normalizedPrimaryCategory {
-        case "bar": return "wineglass"
-        case "restaurant": return "fork.knife"
-        case "shop": return "bag"
-        default: return "sparkles"
+    private var accessibilityLabel: String {
+        switch source {
+        case .mapKitPhoto: return "\(place.name) photo"
+        case .lookAround: return "\(place.name) Look Around snapshot"
+        case .placeholder: return "\(place.name) placeholder image"
         }
     }
 }
+

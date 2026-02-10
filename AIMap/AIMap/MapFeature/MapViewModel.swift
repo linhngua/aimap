@@ -7,7 +7,7 @@ private let defaultBackendBaseURL = "https://map.petetranfab.com"
 
 @MainActor
 final class MapViewModel: ObservableObject {
-    private static let initialCenter = CLLocationCoordinate2D(latitude: 37.3349, longitude: -122.0090)
+    private static let initialCenter = CoverageRegion.singapore.center
     private static let defaultSpan = MKCoordinateSpan(latitudeDelta: 0.08 / 3.0, longitudeDelta: 0.08 / 3.0)
     private static let tapDebounceNanoseconds: UInt64 = 220_000_000
 
@@ -107,6 +107,8 @@ final class MapViewModel: ObservableObject {
     @Published var selectedCategory: POICategory = .restaurants
     @Published var lastTappedCoordinate: CLLocationCoordinate2D?
 
+    private var mapItemsById: [String: MKMapItem] = [:]
+
     @Published var isLoadingNearby: Bool = false
     @Published var nearbyErrorMessage: String?
 
@@ -154,6 +156,16 @@ final class MapViewModel: ObservableObject {
         locationSearchTask?.cancel()
         locationSearchTask = Task { [trimmed] in
             await performLocationSearch(query: trimmed)
+        }
+    }
+
+    func searchForCompletion(_ completion: MKLocalSearchCompletion) {
+        locationSearchErrorMessage = nil
+        isSearchingLocation = true
+
+        locationSearchTask?.cancel()
+        locationSearchTask = Task {
+            await performLocationSearch(completion: completion)
         }
     }
 
@@ -524,13 +536,19 @@ final class MapViewModel: ObservableObject {
         userLocation = coordinate
         guard !hasCenteredOnUserLocation else { return }
         hasCenteredOnUserLocation = true
-        lastCameraCenter = coordinate
+        let targetCenter: CLLocationCoordinate2D
+        if Coverage.isSupported(coordinate) {
+            targetCenter = coordinate
+        } else {
+            targetCenter = Coverage.nearestSupportedRegion(to: coordinate).center
+        }
+        lastCameraCenter = targetCenter
         region = MKCoordinateRegion(
-            center: coordinate,
+            center: targetCenter,
             span: Self.defaultSpan
         )
 
-        startCachePrimerIfNeeded(center: coordinate)
+        startCachePrimerIfNeeded(center: targetCenter)
     }
 
     private func handleLocationError(_ error: Error) {
@@ -562,6 +580,46 @@ final class MapViewModel: ObservableObject {
                 center: coordinate,
                 span: Self.defaultSpan
             )
+
+            if !Coverage.isSupported(coordinate) {
+                locationSearchErrorMessage = Coverage.outOfCoverageMessage()
+                await reportOutOfCoverage(coordinate, source: "search_query")
+            }
+        } catch is CancellationError {
+            // ignore
+        } catch {
+            locationSearchErrorMessage = "Search failed: \(error.localizedDescription)"
+        }
+    }
+
+    private func performLocationSearch(completion: MKLocalSearchCompletion) async {
+        defer { isSearchingLocation = false }
+
+        do {
+            let request = MKLocalSearch.Request(completion: completion)
+            request.region = MKCoordinateRegion(
+                center: lastCameraCenter,
+                span: MKCoordinateSpan(latitudeDelta: 0.6, longitudeDelta: 0.6)
+            )
+            let search = MKLocalSearch(request: request)
+            let response = try await search.start()
+            guard let first = response.mapItems.first else {
+                locationSearchErrorMessage = "No results."
+                return
+            }
+
+            hasCenteredOnUserLocation = true
+            let coordinate = first.placemark.coordinate
+            lastCameraCenter = coordinate
+            region = MKCoordinateRegion(
+                center: coordinate,
+                span: Self.defaultSpan
+            )
+
+            if !Coverage.isSupported(coordinate) {
+                locationSearchErrorMessage = Coverage.outOfCoverageMessage()
+                await reportOutOfCoverage(coordinate, source: "search_suggestion")
+            }
         } catch is CancellationError {
             // ignore
         } catch {
@@ -576,6 +634,7 @@ final class MapViewModel: ObservableObject {
 
         cachePrimerTask?.cancel()
 
+        let resolvedCenter = Coverage.isSupported(center) ? center : Coverage.nearestSupportedRegion(to: center).center
         let radiusSnapshot = radiusMeters
         let cache = nearbyCache
         let mapKit = mapKitService
@@ -583,7 +642,7 @@ final class MapViewModel: ObservableObject {
         let primer = NearbyCachePrimer(nearbyCache: cache, mapKitService: mapKit, backendClient: client)
 
         cachePrimerTask = Task.detached(priority: .background) {
-            await primer.primeAround(center: center, radiusMeters: radiusSnapshot)
+            await primer.primeAround(center: resolvedCenter, radiusMeters: radiusSnapshot)
         }
     }
 
@@ -596,8 +655,33 @@ final class MapViewModel: ObservableObject {
         nearbyIsStale = false
 
         pipelineTask?.cancel()
+        guard Coverage.isSupported(coordinate) else {
+            nearbyPayload = nil
+            nearbyTier = nil
+            nearbyAccuracy = .miss
+            nearbyEtag = nil
+            nearbyIsStale = false
+            candidatesById = [:]
+            nearbyErrorMessage = Coverage.outOfCoverageMessage()
+            Task {
+                await reportOutOfCoverage(coordinate, source: bypassCache ? "tap_refresh" : "tap")
+            }
+            return
+        }
         pipelineTask = Task { @MainActor in
             await runNearbyPipeline(requestId: requestId, coordinate: coordinate, bypassCache: bypassCache)
+        }
+    }
+
+    private func reportOutOfCoverage(_ coordinate: CLLocationCoordinate2D, source: String) async {
+        guard let client = try? makeBackendClient() else { return }
+        let request = CoverageReportRequest(lat: coordinate.latitude, lng: coordinate.longitude, source: source)
+        _ = try? await client.coverageReport(request: request)
+    }
+
+    func recordOutOfCoverageRequest(_ coordinate: CLLocationCoordinate2D, source: String) {
+        Task {
+            await reportOutOfCoverage(coordinate, source: source)
         }
     }
 
@@ -613,6 +697,15 @@ final class MapViewModel: ObservableObject {
             placeDetail = nil
             placeDetailErrorMessage = nil
         }
+    }
+
+    func mapItem(for placeLocalId: String) -> MKMapItem? {
+        mapItemsById[placeLocalId]
+    }
+
+    func upsertMapItems(_ items: [String: MKMapItem]) {
+        guard !items.isEmpty else { return }
+        mapItemsById.merge(items) { _, new in new }
     }
 
     private func fallbackScore(for place: CandidatePlace) -> Double {
@@ -680,8 +773,10 @@ final class MapViewModel: ObservableObject {
                 do {
                     var service = mapKitService
                     service.configuration.radiusMeters = radiusMeters
-                    let candidates = try await service.fetchCandidates(near: coordinate)
-                    let trimmed = Array(candidates.prefix(40))
+                    let pairs = try await service.fetchCandidatesAndMapItems(near: coordinate)
+                    let trimmedPairs = Array(pairs.prefix(40))
+                    let trimmed = trimmedPairs.map(\.0)
+                    let mapItems = Dictionary(uniqueKeysWithValues: trimmedPairs.map { ($0.0.placeLocalId, $0.1) })
 
                     if let client {
                         let ingest = CandidatesIngestRequest(
@@ -700,6 +795,7 @@ final class MapViewModel: ObservableObject {
                         guard requestId == self.latestTapRequestId else { return }
                         self.lastCandidates = trimmed
                         mapKitCandidates = trimmed
+                        self.upsertMapItems(mapItems)
 
                         let payload = self.makeMapKitTierPayload(coordinate: coordinate, candidates: trimmed)
                         self.applyNearby(payload: payload, tier: .mapKitRaw, accuracy: .exact, etag: nil, stale: false)

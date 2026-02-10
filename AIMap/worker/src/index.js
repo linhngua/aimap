@@ -2,6 +2,7 @@ import { handleAreaFacts, handleNearby, handlePlaceDetail } from "./handlers.js"
 import { handleNearbyCached, handleNearbyRefresh } from "./nearbyPipeline.js";
 import { handleCandidatesIngest } from "./candidatesHandler.js";
 import { handleAdmin } from "./admin.js";
+import { handleCoverageReport } from "./coverageHandler.js";
 import { errorResponse } from "./utils.js";
 
 function withCors(response) {
@@ -47,6 +48,9 @@ export default {
     if (url.pathname === "/v1/map/nearby_refresh") {
       if (!env.OPENAI_API_KEY) return withCors(errorResponse("Missing OPENAI_API_KEY", 500));
       return withCors(await handleNearbyRefresh(request, env));
+    }
+    if (url.pathname === "/v1/map/coverage/report") {
+      return withCors(await handleCoverageReport(request, env));
     }
 
     return withCors(errorResponse("Not found", 404));

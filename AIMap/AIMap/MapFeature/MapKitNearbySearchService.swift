@@ -17,22 +17,32 @@ struct MapKitNearbySearchService {
     var configuration: Configuration = .init()
 
     func fetchCandidates(near coordinate: CLLocationCoordinate2D) async throws -> [CandidatePlace] {
+        let pairs = try await fetchCandidatesAndMapItems(near: coordinate)
+        return pairs.map(\.0)
+    }
+
+    func fetchCandidatesAndMapItems(near coordinate: CLLocationCoordinate2D) async throws -> [(CandidatePlace, MKMapItem)] {
         if #available(iOS 17.0, *) {
             do {
                 let request = MKLocalPointsOfInterestRequest(center: coordinate, radius: configuration.radiusMeters)
                 let search = MKLocalSearch(request: request)
                 let response = try await search.start()
                 let mapItems = response.mapItems
-                return mapItemsToCandidates(mapItems)
+                return mapItemsToCandidatesAndItems(mapItems)
             } catch {
-                return try await fetchWithLocalSearch(coordinate)
+                return try await fetchWithLocalSearchAndItems(coordinate)
             }
         } else {
-            return try await fetchWithLocalSearch(coordinate)
+            return try await fetchWithLocalSearchAndItems(coordinate)
         }
     }
 
     private func fetchWithLocalSearch(_ coordinate: CLLocationCoordinate2D) async throws -> [CandidatePlace] {
+        let pairs = try await fetchWithLocalSearchAndItems(coordinate)
+        return pairs.map(\.0)
+    }
+
+    private func fetchWithLocalSearchAndItems(_ coordinate: CLLocationCoordinate2D) async throws -> [(CandidatePlace, MKMapItem)] {
         let request = MKLocalSearch.Request()
         request.region = MKCoordinateRegion(
             center: coordinate,
@@ -42,49 +52,56 @@ struct MapKitNearbySearchService {
         request.resultTypes = [.pointOfInterest]
         let search = MKLocalSearch(request: request)
         let response = try await search.start()
-        return mapItemsToCandidates(response.mapItems)
+        return mapItemsToCandidatesAndItems(response.mapItems)
     }
 
     private func mapItemsToCandidates(_ mapItems: [MKMapItem]) -> [CandidatePlace] {
+        mapItemsToCandidatesAndItems(mapItems).map(\.0)
+    }
+
+    private func mapItemsToCandidatesAndItems(_ mapItems: [MKMapItem]) -> [(CandidatePlace, MKMapItem)] {
         let limited = Array(mapItems.prefix(configuration.maxCandidates))
-        var candidates: [CandidatePlace] = []
-        candidates.reserveCapacity(limited.count)
+        var results: [(CandidatePlace, MKMapItem)] = []
+        results.reserveCapacity(limited.count)
 
         for item in limited {
-            guard let name = item.name else { continue }
-            let coordinate = item.placemark.coordinate
-            let lat = coordinate.latitude
-            let lng = coordinate.longitude
-
-            let address = trimmedAddress(from: item.placemark)
-            let rawCategories = extractRawCategories(from: item)
-
-            let placeLocalId: String
-            if #available(iOS 18.0, *), let identifier = item.identifier?.rawValue, !identifier.isEmpty {
-                placeLocalId = identifier
-            } else {
-                placeLocalId = CandidatePlace.fallbackLocalId(name: name, lat: lat, lng: lng)
-            }
-
-            candidates.append(
-                CandidatePlace(
-                    placeLocalId: placeLocalId,
-                    name: name,
-                    lat: lat,
-                    lng: lng,
-                    addressShort: address,
-                    rawCategories: rawCategories,
-                    url: item.url?.absoluteString,
-                    phone: item.phoneNumber,
-                    rating: nil,
-                    ratingCount: nil,
-                    priceLevel: nil,
-                    openNow: nil
-                )
-            )
+            guard let candidate = mapItemToCandidate(item) else { continue }
+            results.append((candidate, item))
         }
 
-        return candidates
+        return results
+    }
+
+    private func mapItemToCandidate(_ item: MKMapItem) -> CandidatePlace? {
+        guard let name = item.name else { return nil }
+        let coordinate = item.placemark.coordinate
+        let lat = coordinate.latitude
+        let lng = coordinate.longitude
+
+        let address = trimmedAddress(from: item.placemark)
+        let rawCategories = extractRawCategories(from: item)
+
+        let placeLocalId: String
+        if #available(iOS 18.0, *), let identifier = item.identifier?.rawValue, !identifier.isEmpty {
+            placeLocalId = identifier
+        } else {
+            placeLocalId = CandidatePlace.fallbackLocalId(name: name, lat: lat, lng: lng)
+        }
+
+        return CandidatePlace(
+            placeLocalId: placeLocalId,
+            name: name,
+            lat: lat,
+            lng: lng,
+            addressShort: address,
+            rawCategories: rawCategories,
+            url: item.url?.absoluteString,
+            phone: item.phoneNumber,
+            rating: nil,
+            ratingCount: nil,
+            priceLevel: nil,
+            openNow: nil
+        )
     }
 
     private func trimmedAddress(from placemark: MKPlacemark) -> String {

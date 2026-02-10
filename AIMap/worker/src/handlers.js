@@ -6,6 +6,7 @@ import { kvGetJson, kvPutJson } from "./kv.js";
 import { errorResponse, getBypassCache, jsonResponse, safeLog } from "./utils.js";
 import { parseJsonLoose, sanitizeNearbyResponse, sanitizePlaceDetailResponse } from "./sanitize.js";
 import { placeDetailCacheTtlSeconds } from "./config.js";
+import { isSupportedLatLng, outOfCoverageMessage, recordOutOfCoverageRequest } from "./coverage.js";
 
 export async function handleNearby(request, env) {
   let payloadUnknown;
@@ -21,6 +22,10 @@ export async function handleNearby(request, env) {
   }
 
   const payload = parsed.data;
+  if (!isSupportedLatLng(payload.lat, payload.lng)) {
+    await recordOutOfCoverageRequest(env, { lat: payload.lat, lng: payload.lng, source: "nearby" });
+    return errorResponse(outOfCoverageMessage(), 403, { code: "OUT_OF_COVERAGE" });
+  }
   const bypassCache = getBypassCache(request);
   const nowSeconds = Math.floor(Date.now() / 1000);
   const cacheKey = nearbyCacheKey({
@@ -214,6 +219,10 @@ export async function handleAreaFacts(request, env) {
   const cell_id = payloadUnknown?.cell_id;
   if (typeof lat !== "number" || typeof lng !== "number") {
     return errorResponse("Invalid request", 400, "Invalid lat/lng");
+  }
+  if (!isSupportedLatLng(lat, lng)) {
+    await recordOutOfCoverageRequest(env, { lat, lng, source: "area_facts" });
+    return errorResponse(outOfCoverageMessage(), 403, { code: "OUT_OF_COVERAGE" });
   }
   if (typeof radius_m !== "number" || !Number.isInteger(radius_m) || radius_m <= 0) {
     return errorResponse("Invalid request", 400, "Invalid radius_m");

@@ -6,6 +6,10 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		09D0F7AF51BB4A0DDE8B5DB1 /* GoogleMaps in Frameworks */ = {isa = PBXBuildFile; productRef = 4EA491E8A8400AD34E82FEAF /* GoogleMaps */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXContainerItemProxy section */
 		7FE15B0D2F37AAD9001B4F02 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -52,6 +56,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				09D0F7AF51BB4A0DDE8B5DB1 /* GoogleMaps in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -112,6 +117,7 @@
 			);
 			name = AIMap;
 			packageProductDependencies = (
+				4EA491E8A8400AD34E82FEAF /* GoogleMaps */,
 			);
 			productName = AIMap;
 			productReference = 7FE15AFC2F37AAD7001B4F02 /* AIMap.app */;
@@ -195,6 +201,9 @@
 			);
 			mainGroup = 7FE15AF32F37AAD7001B4F02;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				A7E9CB929B988C2A1841ABFD /* XCRemoteSwiftPackageReference "ios-maps-sdk" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 7FE15AFD2F37AAD7001B4F02 /* Products */;
 			projectDirPath = "";
@@ -399,6 +408,8 @@
 				DEVELOPMENT_TEAM = V3NV8BUEE5;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				GOOGLE_MAPS_API_KEY = "";
+				INFOPLIST_KEY_GOOGLE_MAPS_API_KEY = "$(GOOGLE_MAPS_API_KEY)";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "AIMap uses your location to center the map and improve nearby place search.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
@@ -429,6 +440,8 @@
 				DEVELOPMENT_TEAM = V3NV8BUEE5;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				GOOGLE_MAPS_API_KEY = "";
+				INFOPLIST_KEY_GOOGLE_MAPS_API_KEY = "$(GOOGLE_MAPS_API_KEY)";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "AIMap uses your location to center the map and improve nearby place search.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
@@ -560,6 +573,25 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		A7E9CB929B988C2A1841ABFD /* XCRemoteSwiftPackageReference "ios-maps-sdk" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/googlemaps/ios-maps-sdk";
+			requirement = {
+				kind = exactVersion;
+				version = 10.8.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		4EA491E8A8400AD34E82FEAF /* GoogleMaps */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A7E9CB929B988C2A1841ABFD /* XCRemoteSwiftPackageReference "ios-maps-sdk" */;
+			productName = GoogleMaps;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 7FE15AF42F37AAD7001B4F02 /* Project object */;
 }

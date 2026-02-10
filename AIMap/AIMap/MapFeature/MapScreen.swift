@@ -5,30 +5,48 @@ struct MapScreen: View {
     @StateObject private var viewModel = MapViewModel()
     @FocusState private var isSearchFocused: Bool
     @State private var locationQuery: String = ""
-    @State private var gridCategory: POICategory?
+    @StateObject private var searchCompleter = LocationSearchCompleter()
     @AppStorage(CategoryPreferences.storageKey) private var visibleCategoriesRaw: String = CategoryPreferences.encode(CategoryPreferences.defaultSelection)
     private let mapStyle: LuxuryMapStyle = .premium
 
     var body: some View {
         NavigationStack {
             ZStack(alignment: .top) {
-                LuxuryMapView(
-                    region: $viewModel.region,
-                    style: mapStyle,
-                    pins: pins,
-                    dropPinCoordinate: viewModel.lastTappedCoordinate,
-                    onTap: { coordinate in
-                        viewModel.handleMapTap(coordinate)
-                    },
-                    onSelectPin: { placeLocalId in
-                        if let place = viewModel.candidatesById[placeLocalId] {
-                            viewModel.selectPlace(place)
+                if useGoogleMaps {
+                    GoogleLuxuryMapView(
+                        region: $viewModel.region,
+                        style: mapStyle,
+                        pins: pins,
+                        dropPinCoordinate: viewModel.lastTappedCoordinate,
+                        onTap: { coordinate in
+                            viewModel.handleMapTap(coordinate)
+                        },
+                        onSelectPin: { placeLocalId in
+                            if let place = viewModel.candidatesById[placeLocalId] {
+                                viewModel.selectPlace(place)
+                            }
                         }
-                    }
-                )
+                    )
+                } else {
+                    LuxuryMapView(
+                        region: $viewModel.region,
+                        style: mapStyle,
+                        pins: pins,
+                        dropPinCoordinate: viewModel.lastTappedCoordinate,
+                        onTap: { coordinate in
+                            viewModel.handleMapTap(coordinate)
+                        },
+                        onSelectPin: { placeLocalId in
+                            if let place = viewModel.candidatesById[placeLocalId] {
+                                viewModel.selectPlace(place)
+                            }
+                        }
+                    )
+                }
 
                 VStack(spacing: 10) {
                     locationSearchBar
+                    locationSuggestions
                     categoryChips
                     statusBanner
                     Spacer()
@@ -38,7 +56,7 @@ struct MapScreen: View {
             }
             .navigationBarTitleDisplayMode(.inline)
             .tint(Color(uiColor: mapStyle.accentColor))
-            .navigationDestination(item: $gridCategory) { category in
+            .navigationDestination(for: POICategory.self) { category in
                 PlacesGridScreen(viewModel: viewModel, category: category, accentColor: Color(uiColor: mapStyle.accentColor))
             }
             .toolbar {
@@ -84,6 +102,7 @@ struct MapScreen: View {
             .sheet(item: $viewModel.selectedPlace) { place in
                 PlaceDetailSheet(
                     place: place,
+                    mapItem: viewModel.mapItem(for: place.placeLocalId),
                     detail: viewModel.placeDetail,
                     isLoading: viewModel.isLoadingPlaceDetail,
                     isLoadingAreaFacts: viewModel.isLoadingAreaFacts,
@@ -121,6 +140,9 @@ struct MapScreen: View {
                 .autocorrectionDisabled()
                 .submitLabel(.search)
                 .focused($isSearchFocused)
+                .onChange(of: locationQuery) { _, newValue in
+                    searchCompleter.update(query: newValue, region: viewModel.region)
+                }
                 .onSubmit {
                     viewModel.searchForLocation(locationQuery)
                     isSearchFocused = false
@@ -150,6 +172,73 @@ struct MapScreen: View {
         .padding(.horizontal)
     }
 
+    private var locationSuggestions: some View {
+        Group {
+            if isSearchFocused, searchCompleter.shouldShowSuggestions {
+                VStack(spacing: 0) {
+                    if searchCompleter.isLoading {
+                        HStack(spacing: 10) {
+                            ProgressView()
+                            Text("Searching…")
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                        }
+                        .padding(.vertical, 10)
+                        .padding(.horizontal, 12)
+                    } else if searchCompleter.results.isEmpty {
+                        HStack {
+                            Text("No suggestions")
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                        }
+                        .padding(.vertical, 10)
+                        .padding(.horizontal, 12)
+                    } else {
+                        ForEach(Array(searchCompleter.results.prefix(6).enumerated()), id: \.offset) { index, completion in
+                            Button {
+                                viewModel.searchForCompletion(completion)
+                                locationQuery = completion.title
+                                searchCompleter.clear()
+                                isSearchFocused = false
+                            } label: {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(completion.title)
+                                        .font(.subheadline)
+                                        .foregroundStyle(.primary)
+                                        .lineLimit(1)
+                                    if !completion.subtitle.isEmpty {
+                                        Text(completion.subtitle)
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                            .lineLimit(1)
+                                    }
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.vertical, 10)
+                                .padding(.horizontal, 12)
+                            }
+                            .buttonStyle(.plain)
+
+                            if index < min(searchCompleter.results.count, 6) - 1 {
+                                Divider()
+                                    .opacity(0.12)
+                            }
+                        }
+                    }
+                }
+                .background(.thinMaterial)
+                .clipShape(RoundedRectangle(cornerRadius: 14))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 14)
+                        .stroke(Color(uiColor: mapStyle.accentColor).opacity(0.28), lineWidth: 1)
+                )
+                .padding(.horizontal)
+            }
+        }
+    }
+
     private var categoryChips: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 10) {
@@ -160,11 +249,7 @@ struct MapScreen: View {
                         count: count,
                         isSelected: viewModel.selectedCategory == category,
                         accent: Color(uiColor: mapStyle.accentColor),
-                        onSelect: { viewModel.selectCategory(category) },
-                        onOpenGrid: {
-                            viewModel.selectCategory(category)
-                            gridCategory = category
-                        }
+                        onSelect: { viewModel.selectCategory(category) }
                     )
                 }
             }
@@ -182,6 +267,13 @@ struct MapScreen: View {
                 .padding(10)
                 .background(.thinMaterial)
                 .clipShape(RoundedRectangle(cornerRadius: 12))
+            } else if !useGoogleMaps {
+                Text("Google Maps key missing — showing Apple Maps fallback.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .padding(10)
+                    .background(.thinMaterial)
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
             } else if let message = viewModel.locationSearchErrorMessage {
                 Text(message)
                     .font(.footnote)
@@ -288,6 +380,10 @@ struct MapScreen: View {
             )
         }
     }
+
+    private var useGoogleMaps: Bool {
+        GoogleMapsBootstrap.configureIfPossible()
+    }
 }
 
 private struct CategoryChip: View {
@@ -296,11 +392,10 @@ private struct CategoryChip: View {
     let isSelected: Bool
     let accent: Color
     let onSelect: () -> Void
-    let onOpenGrid: () -> Void
 
     var body: some View {
-        HStack(spacing: 8) {
-            Button(action: onOpenGrid) {
+        NavigationLink(value: category) {
+            HStack(spacing: 8) {
                 Image(systemName: category.systemImage)
                     .font(.subheadline)
                     .foregroundStyle(accent)
@@ -309,28 +404,25 @@ private struct CategoryChip: View {
                         Circle()
                             .fill(accent.opacity(isSelected ? 0.22 : 0.14))
                     )
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Open \(category.title) grid")
 
-            Button(action: onSelect) {
                 Text("\(category.title) (\(count))")
                     .font(.subheadline)
                     .foregroundStyle(.primary)
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Show \(category.title)")
+            .padding(.vertical, 8)
+            .padding(.horizontal, 12)
+            .background(
+                RoundedRectangle(cornerRadius: 16)
+                    .fill(isSelected ? accent.opacity(0.16) : Color(.secondarySystemBackground))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 16)
+                    .stroke(accent.opacity(isSelected ? 0.30 : 0.14), lineWidth: 1)
+            )
         }
-        .padding(.vertical, 8)
-        .padding(.horizontal, 12)
-        .background(
-            RoundedRectangle(cornerRadius: 16)
-                .fill(isSelected ? accent.opacity(0.16) : Color(.secondarySystemBackground))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 16)
-                .stroke(accent.opacity(isSelected ? 0.30 : 0.14), lineWidth: 1)
-        )
+        .buttonStyle(.plain)
+        .simultaneousGesture(TapGesture().onEnded(onSelect))
+        .accessibilityLabel("Open \(category.title) grid")
     }
 }
 
@@ -341,3 +433,61 @@ struct MapScreen_Previews: PreviewProvider {
     }
 }
 #endif
+
+@MainActor
+private final class LocationSearchCompleter: NSObject, ObservableObject, MKLocalSearchCompleterDelegate {
+    @Published var results: [MKLocalSearchCompletion] = []
+    @Published var isLoading: Bool = false
+    @Published private(set) var lastQuery: String = ""
+
+    private let completer: MKLocalSearchCompleter = MKLocalSearchCompleter()
+    private var updateTask: Task<Void, Never>?
+
+    override init() {
+        super.init()
+        completer.delegate = self
+        completer.resultTypes = [.address, .pointOfInterest]
+    }
+
+    var shouldShowSuggestions: Bool {
+        lastQuery.trimmingCharacters(in: .whitespacesAndNewlines).count >= 2
+    }
+
+    func update(query: String, region: MKCoordinateRegion) {
+        lastQuery = query
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        updateTask?.cancel()
+
+        guard trimmed.count >= 2 else {
+            clear()
+            return
+        }
+
+        isLoading = true
+        updateTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 220_000_000)
+            guard let self else { return }
+            guard !Task.isCancelled else { return }
+            self.completer.region = region
+            self.completer.queryFragment = trimmed
+        }
+    }
+
+    func clear() {
+        updateTask?.cancel()
+        isLoading = false
+        results = []
+        completer.queryFragment = ""
+    }
+
+    func completerDidUpdateResults(_ completer: MKLocalSearchCompleter) {
+        isLoading = false
+        results = Array(completer.results.prefix(10))
+    }
+
+    func completer(_ completer: MKLocalSearchCompleter, didFailWithError error: Error) {
+        _ = error
+        isLoading = false
+        results = []
+    }
+}

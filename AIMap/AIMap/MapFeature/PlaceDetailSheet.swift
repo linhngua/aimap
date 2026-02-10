@@ -1,8 +1,10 @@
 import CoreLocation
+import MapKit
 import SwiftUI
 
 struct PlaceDetailSheet: View {
     let place: CandidatePlace
+    let mapItem: MKMapItem?
     let detail: PlaceDetailResponse?
     let isLoading: Bool
     let isLoadingAreaFacts: Bool
@@ -11,16 +13,38 @@ struct PlaceDetailSheet: View {
     let onRefresh: () -> Void
     let onSelectNearby: (String) -> Void
 
+    @Environment(\.openURL) private var openURL
+
+    private enum ChipAction: Hashable {
+        case none
+        case openURL(URL)
+        case call(String)
+        case openInAppleMaps
+    }
+
     private struct Chip: Identifiable, Hashable {
         let text: String
         let systemImage: String?
+        let action: ChipAction
 
-        var id: String { (systemImage ?? "") + "|" + text }
+        var id: String {
+            switch action {
+            case .none:
+                return (systemImage ?? "") + "|" + text
+            case .openURL(let url):
+                return (systemImage ?? "") + "|" + text + "|" + url.absoluteString
+            case .call(let number):
+                return (systemImage ?? "") + "|" + text + "|" + number
+            case .openInAppleMaps:
+                return (systemImage ?? "") + "|" + text + "|maps"
+            }
+        }
     }
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
+                heroImage
                 header
                 whyWorthItSection
                 quickTakeSection
@@ -31,6 +55,21 @@ struct PlaceDetailSheet: View {
             }
             .padding()
         }
+    }
+
+    private var heroImage: some View {
+        PlaceProfileImage(
+            place: place,
+            mapItem: mapItem,
+            category: POICategory.classify(place)
+        )
+        .frame(height: 180)
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(Color.white.opacity(0.10), lineWidth: 1)
+        )
+        .accessibilityHidden(true)
     }
 
     private var header: some View {
@@ -100,19 +139,7 @@ struct PlaceDetailSheet: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
                     ForEach(quickChips) { chip in
-                        HStack(spacing: 6) {
-                            if let systemImage = chip.systemImage {
-                                Image(systemName: systemImage)
-                                    .font(.caption)
-                            }
-                            Text(chip.text)
-                                .font(.caption)
-                                .lineLimit(1)
-                        }
-                        .padding(.vertical, 7)
-                        .padding(.horizontal, 10)
-                        .background(.thinMaterial)
-                        .clipShape(Capsule())
+                        quickChipView(chip)
                     }
                 }
             }
@@ -125,35 +152,37 @@ struct PlaceDetailSheet: View {
                 .font(.headline)
 
             if let detail, !detail.nearbyMoves.isEmpty {
-                VStack(alignment: .leading, spacing: 10) {
-                    ForEach(detail.nearbyMoves.prefix(3)) { move in
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(detail.nearbyMoves.prefix(2)) { move in
                         Button {
                             onSelectNearby(move.placeLocalId)
                         } label: {
-                            VStack(alignment: .leading, spacing: 2) {
-                                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                                    Text("•")
-                                        .foregroundStyle(.secondary)
+                            HStack(spacing: 10) {
+                                VStack(alignment: .leading, spacing: 2) {
                                     Text(move.label)
                                         .font(.subheadline)
                                         .foregroundStyle(.primary)
                                         .lineLimit(1)
-                                    Spacer(minLength: 0)
-                                    Image(systemName: "chevron.right")
-                                        .font(.caption2)
-                                        .foregroundStyle(.tertiary)
+                                    if !move.reason.isEmpty {
+                                        Text(move.reason)
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                            .lineLimit(1)
+                                    }
                                 }
-                                if !move.reason.isEmpty {
-                                    Text(move.reason)
-                                        .font(.footnote)
-                                        .foregroundStyle(.secondary)
-                                        .lineLimit(2)
-                                        .padding(.leading, 16)
-                                }
+
+                                Spacer(minLength: 0)
+
+                                Image(systemName: "chevron.right")
+                                    .font(.caption2)
+                                    .foregroundStyle(.tertiary)
                             }
+                            .padding(.vertical, 8)
+                            .padding(.horizontal, 10)
+                            .background(.thinMaterial)
+                            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                         }
                         .buttonStyle(.plain)
-                        .contentShape(Rectangle())
                     }
                 }
             } else {
@@ -253,25 +282,36 @@ struct PlaceDetailSheet: View {
     private var quickChips: [Chip] {
         var chips: [Chip] = []
 
-        chips.append(.init(text: typeLabel, systemImage: "tag"))
+        chips.append(.init(text: typeLabel, systemImage: "tag", action: .none))
 
         if let distanceChip {
             chips.append(distanceChip)
         }
 
+        if let rating = place.rating {
+            chips.append(.init(text: String(format: "%.1f", rating), systemImage: "star.fill", action: .none))
+        }
+
         if let openNow = place.openNow {
-            chips.append(.init(text: openNow ? "Open now" : "Closed", systemImage: "clock"))
+            chips.append(.init(text: openNow ? "Open now" : "Closed", systemImage: "clock", action: .none))
         }
 
         if let priceLevel = place.priceLevel, (1...4).contains(priceLevel) {
-            chips.append(.init(text: String(repeating: "$", count: priceLevel), systemImage: "dollarsign"))
+            chips.append(.init(text: String(repeating: "$", count: priceLevel), systemImage: "dollarsign", action: .none))
         }
 
-        if let url = place.url, !url.isEmpty {
-            chips.append(.init(text: "Website", systemImage: "safari"))
+        if let url = place.url, let websiteURL = URL(string: url) {
+            chips.append(.init(text: "Website", systemImage: "safari", action: .openURL(websiteURL)))
         }
+
+        chips.append(.init(text: "Hours", systemImage: "clock.badge.questionmark", action: .openInAppleMaps))
+
+        if place.normalizedPrimaryCategory == "restaurant" || place.normalizedPrimaryCategory == "bar" {
+            chips.append(.init(text: "Menu", systemImage: "menucard", action: .openInAppleMaps))
+        }
+
         if let phone = place.phone, !phone.isEmpty {
-            chips.append(.init(text: "Phone", systemImage: "phone"))
+            chips.append(.init(text: "Call", systemImage: "phone", action: .call(phone)))
         }
 
         return chips
@@ -292,7 +332,7 @@ struct PlaceDetailSheet: View {
         let dest = CLLocation(latitude: place.lat, longitude: place.lng)
         let meters = origin.distance(from: dest)
         guard meters.isFinite, meters >= 0 else { return nil }
-        return .init(text: formatDistance(meters), systemImage: "location")
+        return .init(text: formatDistance(meters), systemImage: "location", action: .none)
     }
 
     private func formatDistance(_ meters: CLLocationDistance) -> String {
@@ -308,6 +348,62 @@ struct PlaceDetailSheet: View {
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
         return Array(lines.prefix(3))
+    }
+
+    @ViewBuilder
+    private func quickChipView(_ chip: Chip) -> some View {
+        let content = HStack(spacing: 6) {
+            if let systemImage = chip.systemImage {
+                Image(systemName: systemImage)
+                    .font(.caption)
+            }
+            Text(chip.text)
+                .font(.caption)
+                .lineLimit(1)
+        }
+        .padding(.vertical, 7)
+        .padding(.horizontal, 10)
+        .background(.thinMaterial)
+        .clipShape(Capsule())
+
+        switch chip.action {
+        case .none:
+            content
+        case .openURL(let url):
+            Link(destination: url) { content }
+        case .call(let number):
+            Button {
+                if let url = makePhoneURL(number) {
+                    openURL(url)
+                }
+            } label: {
+                content
+            }
+        case .openInAppleMaps:
+            Button {
+                openInAppleMaps()
+            } label: {
+                content
+            }
+        }
+    }
+
+    private func openInAppleMaps() {
+        if let mapItem {
+            mapItem.openInMaps(launchOptions: nil)
+            return
+        }
+
+        let placemark = MKPlacemark(coordinate: place.coordinate)
+        let item = MKMapItem(placemark: placemark)
+        item.name = place.name
+        item.openInMaps(launchOptions: nil)
+    }
+
+    private func makePhoneURL(_ raw: String) -> URL? {
+        let digits = raw.filter { $0.isNumber || $0 == "+" }
+        guard !digits.isEmpty else { return nil }
+        return URL(string: "tel://\(digits)")
     }
 
     @ViewBuilder

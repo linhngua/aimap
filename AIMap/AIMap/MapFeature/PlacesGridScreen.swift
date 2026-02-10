@@ -13,15 +13,17 @@ struct PlacesGridScreen: View {
 
     @State private var gridPlaces: [CandidatePlace] = []
     @State private var isLoadingMore: Bool = false
+    @State private var outOfCoverageMessage: String?
 
     var body: some View {
         ScrollView {
             LazyVGrid(columns: columns, spacing: 12) {
                 ForEach(gridPlaces) { place in
+                    let mapItem = viewModel.mapItem(for: place.placeLocalId)
                     Button {
                         viewModel.selectPlace(place)
                     } label: {
-                        PlaceGridCard(place: place, origin: origin, accentColor: accentColor)
+                        PlaceGridCard(place: place, mapItem: mapItem, origin: origin, accentColor: accentColor)
                     }
                     .buttonStyle(.plain)
                 }
@@ -33,18 +35,29 @@ struct PlacesGridScreen: View {
         .navigationTitle(category.title)
         .navigationBarTitleDisplayMode(.inline)
         .overlay(alignment: .top) {
-            if isLoadingMore {
-                HStack(spacing: 8) {
-                    ProgressView()
-                    Text("Loading more…")
+            VStack(spacing: 8) {
+                if let message = outOfCoverageMessage {
+                    Text(message)
                         .font(.footnote)
                         .foregroundStyle(.secondary)
+                        .padding(10)
+                        .background(.thinMaterial)
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
                 }
-                .padding(10)
-                .background(.thinMaterial)
-                .clipShape(RoundedRectangle(cornerRadius: 12))
-                .padding(.top, 8)
+
+                if isLoadingMore {
+                    HStack(spacing: 8) {
+                        ProgressView()
+                        Text("Loading more…")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(10)
+                    .background(.thinMaterial)
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                }
             }
+            .padding(.top, 8)
         }
         .task(id: category) {
             await loadPlaces()
@@ -59,9 +72,18 @@ struct PlacesGridScreen: View {
         let initial = viewModel.listItems(for: category).map(\.place)
         await MainActor.run {
             gridPlaces = sortByDistance(initial, origin: origin)
+            prefetchImages(for: gridPlaces)
         }
 
         guard gridPlaces.count < 8, let origin else { return }
+        guard Coverage.isSupported(origin) else {
+            await MainActor.run {
+                outOfCoverageMessage = Coverage.outOfCoverageMessage()
+            }
+            viewModel.recordOutOfCoverageRequest(origin, source: "grid")
+            return
+        }
+        await MainActor.run { outOfCoverageMessage = nil }
 
         await MainActor.run { isLoadingMore = true }
         defer { Task { @MainActor in isLoadingMore = false } }
@@ -80,7 +102,12 @@ struct PlacesGridScreen: View {
             if Task.isCancelled { return }
             service.configuration.radiusMeters = radius
             do {
-                let candidates = try await service.fetchCandidates(near: origin)
+                let pairs = try await service.fetchCandidatesAndMapItems(near: origin)
+                let candidates = pairs.map(\.0)
+                let mapItems = Dictionary(uniqueKeysWithValues: pairs.map { ($0.0.placeLocalId, $0.1) })
+                await MainActor.run {
+                    viewModel.upsertMapItems(mapItems)
+                }
                 for place in candidates {
                     guard POICategory.classify(place) == category else { continue }
                     merged[place.placeLocalId] = place
@@ -89,6 +116,7 @@ struct PlacesGridScreen: View {
                 if all.count >= 8 {
                     await MainActor.run {
                         gridPlaces = sortByDistance(all, origin: origin)
+                        prefetchImages(for: gridPlaces)
                     }
                     return
                 }
@@ -99,6 +127,24 @@ struct PlacesGridScreen: View {
 
         await MainActor.run {
             gridPlaces = sortByDistance(Array(merged.values), origin: origin)
+            prefetchImages(for: gridPlaces)
+        }
+    }
+
+    private func prefetchImages(for places: [CandidatePlace]) {
+        let mapItemsSnapshot: [String: MKMapItem] = Dictionary(uniqueKeysWithValues: places.compactMap { place in
+            guard let item = viewModel.mapItem(for: place.placeLocalId) else { return nil }
+            return (place.placeLocalId, item)
+        })
+        let placesSnapshot = places
+        let accent = UIColor(accentColor)
+        Task.detached(priority: .utility) {
+            await POIImageResolver.shared.prefetch(
+                places: placesSnapshot,
+                mapItemLookup: { mapItemsSnapshot[$0] },
+                accentColor: accent,
+                maxCount: 10
+            )
         }
     }
 
@@ -115,12 +161,13 @@ struct PlacesGridScreen: View {
 
 private struct PlaceGridCard: View {
     let place: CandidatePlace
+    let mapItem: MKMapItem?
     let origin: CLLocationCoordinate2D?
     let accentColor: Color
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            PlaceProfileImage(place: place)
+            PlaceProfileImage(place: place, mapItem: mapItem, category: POICategory.classify(place))
                 .frame(height: 120)
                 .clipShape(RoundedRectangle(cornerRadius: 14))
                 .overlay(

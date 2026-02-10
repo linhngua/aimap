@@ -8,6 +8,7 @@ import { sha256Hex, stableStringify } from "./etag.js";
 import { parseJsonLoose, sanitizeNearbyResponse } from "./sanitize.js";
 import { findBestCandidates, ingestCandidates } from "./candidatesStore.js";
 import { candidatesCacheTtlSeconds, nearbyCacheTtlSeconds, nearbyStaleAfterSeconds } from "./config.js";
+import { isSupportedLatLng, outOfCoverageMessage, recordOutOfCoverageRequest } from "./coverage.js";
 
 const CATEGORY_KEYS = ["restaurants", "bars", "attractions", "shops"];
 
@@ -143,6 +144,10 @@ export async function handleNearbyCached(request, env) {
   } catch (err) {
     return errorResponse("Invalid request", 400, String(err));
   }
+  if (!isSupportedLatLng(payload.lat, payload.lng)) {
+    await recordOutOfCoverageRequest(env, { lat: payload.lat, lng: payload.lng, source: "nearby_cached" });
+    return errorResponse(outOfCoverageMessage(), 403, { code: "OUT_OF_COVERAGE" });
+  }
 
   const nowSeconds = Math.floor(Date.now() / 1000);
   const staleAfterSeconds = nearbyStaleAfterSeconds(env);
@@ -274,6 +279,10 @@ export async function handleNearbyRefresh(request, env) {
     payload = parseNearbyRefreshRequest(payloadUnknown);
   } catch (err) {
     return errorResponse("Invalid request", 400, String(err));
+  }
+  if (!isSupportedLatLng(payload.lat, payload.lng)) {
+    await recordOutOfCoverageRequest(env, { lat: payload.lat, lng: payload.lng, source: "nearby_refresh" });
+    return errorResponse(outOfCoverageMessage(), 403, { code: "OUT_OF_COVERAGE" });
   }
 
   const bypassCache = getBypassCache(request);

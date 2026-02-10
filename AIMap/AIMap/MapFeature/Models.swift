@@ -215,3 +215,86 @@ extension CandidatePlace {
         return "attraction"
     }
 }
+
+struct CoverageBounds: Hashable {
+    let minLat: Double
+    let maxLat: Double
+    let minLng: Double
+    let maxLng: Double
+
+    func contains(_ coordinate: CLLocationCoordinate2D) -> Bool {
+        guard coordinate.latitude.isFinite, coordinate.longitude.isFinite else { return false }
+        return coordinate.latitude >= minLat
+            && coordinate.latitude <= maxLat
+            && coordinate.longitude >= minLng
+            && coordinate.longitude <= maxLng
+    }
+}
+
+enum CoverageRegion: String, CaseIterable, Hashable {
+    case singapore
+    case hoChiMinhCity
+
+    var title: String {
+        switch self {
+        case .singapore: return "Singapore"
+        case .hoChiMinhCity: return "Ho Chi Minh City"
+        }
+    }
+
+    var center: CLLocationCoordinate2D {
+        switch self {
+        case .singapore:
+            return CLLocationCoordinate2D(latitude: 1.3521, longitude: 103.8198)
+        case .hoChiMinhCity:
+            return CLLocationCoordinate2D(latitude: 10.8231, longitude: 106.6297)
+        }
+    }
+
+    var bounds: CoverageBounds {
+        switch self {
+        case .singapore:
+            return CoverageBounds(minLat: 1.130, maxLat: 1.480, minLng: 103.600, maxLng: 104.110)
+        case .hoChiMinhCity:
+            return CoverageBounds(minLat: 10.350, maxLat: 11.200, minLng: 106.300, maxLng: 107.150)
+        }
+    }
+}
+
+enum Coverage {
+    static let supportedRegions: [CoverageRegion] = CoverageRegion.allCases
+
+    static func supportedRegion(for coordinate: CLLocationCoordinate2D) -> CoverageRegion? {
+        supportedRegions.first { $0.bounds.contains(coordinate) }
+    }
+
+    static func isSupported(_ coordinate: CLLocationCoordinate2D) -> Bool {
+        supportedRegion(for: coordinate) != nil
+    }
+
+    static func nearestSupportedRegion(to coordinate: CLLocationCoordinate2D) -> CoverageRegion {
+        let origin = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
+        return supportedRegions
+            .map { region in
+                (region, origin.distance(from: CLLocation(latitude: region.center.latitude, longitude: region.center.longitude)))
+            }
+            .min(by: { $0.1 < $1.1 })?
+            .0 ?? .singapore
+    }
+
+    static func outOfCoverageMessage() -> String {
+        let names = supportedRegions.map(\.title).joined(separator: " and ")
+        return "AIMap will be available soon in your area. Currently supported: \(names)."
+    }
+}
+
+struct CoverageReportRequest: Codable, Hashable {
+    let lat: Double
+    let lng: Double
+    let source: String
+}
+
+struct CoverageReportResponse: Codable, Hashable {
+    let status: String
+    let recorded: Bool?
+}

@@ -95,6 +95,15 @@ actor BackendClient {
         )
     }
 
+    func coverageReport(request: CoverageReportRequest) async throws -> CoverageReportResponse {
+        try await post(
+            path: "/v1/map/coverage/report",
+            body: request,
+            responseType: CoverageReportResponse.self,
+            bypassCache: true
+        )
+    }
+
     private func post<Request: Encodable, Response: Decodable>(
         path: String,
         body: Request,

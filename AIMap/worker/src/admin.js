@@ -8,6 +8,7 @@ import { parseJsonLoose, sanitizeNearbyResponse } from "./sanitize.js";
 import { errorResponse, getBypassCache, jsonResponse, safeLog } from "./utils.js";
 import { candidatesLatestKey, findBestCandidates, ingestCandidates } from "./candidatesStore.js";
 import { candidatesCacheTtlSeconds, nearbyCacheTtlSeconds, nearbyStaleAfterSeconds } from "./config.js";
+import { isSupportedLatLng, outOfCoverageMessage, recordOutOfCoverageRequest } from "./coverage.js";
 
 const FIXED_CATEGORIES = ["restaurants", "bars", "attractions", "shops"];
 const MAX_LLM_CANDIDATES = 40;
@@ -136,6 +137,8 @@ function adminHtml() {
       .muted { color: rgba(232,232,232,0.55); }
       .small { font-size: 12px; }
       .grid { display: grid; gap: 10px; }
+      .results { display: grid; gap: 8px; margin-top: 10px; }
+      .results button { text-align: left; line-height: 1.25; }
       textarea { width: 100%; min-height: 96px; resize: vertical; }
       a { color: rgba(212,194,140,0.92); text-decoration: none; }
     </style>
@@ -148,14 +151,23 @@ function adminHtml() {
         <button id="saveToken" class="primary">Save</button>
       </div>
     </header>
-    <main>
-      <div id="map"></div>
-      <aside>
-        <div class="card">
-          <div class="label">Cache Overlay</div>
-          <div class="row">
-            <select id="radius">
-              <option value="300">300m</option>
+	    <main>
+	      <div id="map"></div>
+	      <aside>
+	        <div class="card">
+	          <div class="label">Search</div>
+	          <div class="row">
+	            <input id="searchQuery" placeholder="Search a place or address…" />
+	            <button id="searchGo" class="primary">Go</button>
+	          </div>
+	          <div id="searchResults" class="results"></div>
+	        </div>
+
+	        <div class="card">
+	          <div class="label">Cache Overlay</div>
+	          <div class="row">
+	            <select id="radius">
+	              <option value="300">300m</option>
               <option value="800" selected>800m</option>
               <option value="1500">1500m</option>
             </select>
@@ -280,7 +292,38 @@ function adminHtml() {
 
       window.__auto = { running: false };
 
-      const map = L.map("map", { zoomControl: true }).setView([37.3349, -122.0090], 13);
+      const COVERAGE_REGIONS = [
+        { id: "singapore", title: "Singapore", bounds: { minLat: 1.13, maxLat: 1.48, minLng: 103.6, maxLng: 104.11 } },
+        { id: "ho_chi_minh_city", title: "Ho Chi Minh City", bounds: { minLat: 10.35, maxLat: 11.2, minLng: 106.3, maxLng: 107.15 } },
+      ];
+
+      function inBounds(bounds, lat, lng) {
+        return lat >= bounds.minLat && lat <= bounds.maxLat && lng >= bounds.minLng && lng <= bounds.maxLng;
+      }
+
+      function supportedRegion(lat, lng) {
+        return COVERAGE_REGIONS.find((r) => inBounds(r.bounds, lat, lng)) || null;
+      }
+
+      function outOfCoverageMessage() {
+        const names = COVERAGE_REGIONS.map((r) => r.title).join(" and ");
+        return "AIMap will be available soon in your area. Currently supported: " + names + ".";
+      }
+
+      async function reportOutOfCoverage(lat, lng, source) {
+        try {
+          await fetch("/v1/map/coverage/report", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ lat, lng, source: source || "admin" })
+          });
+        } catch {
+          // ignore
+        }
+      }
+
+      const DEFAULT_CENTER = { lat: 1.3521, lng: 103.8198 };
+      const map = L.map("map", { zoomControl: true }).setView([DEFAULT_CENTER.lat, DEFAULT_CENTER.lng], 12);
       L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
         attribution: '&copy; OpenStreetMap contributors',
         maxZoom: 19
@@ -288,6 +331,33 @@ function adminHtml() {
 
       const overlayLayer = L.layerGroup().addTo(map);
       const selectionLayer = L.layerGroup().addTo(map);
+
+      function setSelected({ lat, lng, label }) {
+        selectionLayer.clearLayers();
+        const region = supportedRegion(lat, lng);
+        const markerColor = region ? "#D84A4A" : "#8A8A8A";
+        const marker = L.circleMarker([lat, lng], { radius: 6, color: markerColor, weight: 2, fillOpacity: 0.25 });
+        marker.addTo(selectionLayer);
+
+        if (!region) {
+          window.__selected = null;
+          statusLine(outOfCoverageMessage());
+          reportOutOfCoverage(lat, lng, "admin_select");
+          updateButtons();
+          return;
+        }
+
+        const radiusBucket = parseInt(document.getElementById("radius").value, 10);
+        const precision = precisionForRadiusBucket(radiusBucket);
+        const cellId = geohashEncode(lat, lng, precision);
+        window.__selected = { lat, lng, cell_id: cellId };
+        const suffix =
+          typeof label === "string" && label.trim().length > 0 ? " • " + label.trim() : "";
+        statusLine(
+          "Selected: " + lat.toFixed(6) + ", " + lng.toFixed(6) + " • cell " + cellId + suffix,
+        );
+        updateButtons();
+      }
 
       function formatTs(seconds) {
         if (!seconds) return "unknown";
@@ -419,15 +489,88 @@ function adminHtml() {
       map.on("moveend", () => refreshOverlay().catch(() => {}));
 
       map.on("click", (e) => {
-        selectionLayer.clearLayers();
-        const marker = L.circleMarker(e.latlng, { radius: 6, color: "#D84A4A", weight: 2, fillOpacity: 0.25 });
-        marker.addTo(selectionLayer);
-        const radiusBucket = parseInt(document.getElementById("radius").value, 10);
-        const precision = precisionForRadiusBucket(radiusBucket);
-        const cellId = geohashEncode(e.latlng.lat, e.latlng.lng, precision);
-        window.__selected = { lat: e.latlng.lat, lng: e.latlng.lng, cell_id: cellId };
-        statusLine(\`Selected: \${e.latlng.lat.toFixed(6)}, \${e.latlng.lng.toFixed(6)} • cell \${cellId}\`);
-        updateButtons();
+        setSelected({ lat: e.latlng.lat, lng: e.latlng.lng });
+      });
+
+      async function searchNominatim(query) {
+        const url =
+          "https://nominatim.openstreetmap.org/search?format=json&limit=8&countrycodes=sg,vn&q=" + encodeURIComponent(query);
+        const res = await fetch(url, { headers: { accept: "application/json" } });
+        if (!res.ok) throw new Error("Search failed (HTTP " + res.status + ")");
+        const data = await res.json();
+        return Array.isArray(data) ? data : [];
+      }
+
+      function renderSearchResults(items) {
+        const container = document.getElementById("searchResults");
+        if (!container) return;
+        container.innerHTML = "";
+
+        const results = Array.isArray(items) ? items : [];
+        if (results.length === 0) {
+          const empty = document.createElement("div");
+          empty.className = "status muted small";
+          empty.textContent = "No results.";
+          container.appendChild(empty);
+          return;
+        }
+
+        for (const item of results.slice(0, 6)) {
+          const lat = Number.parseFloat(item?.lat);
+          const lng = Number.parseFloat(item?.lon);
+          if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
+
+          const label =
+            typeof item?.display_name === "string" ? item.display_name : lat.toFixed(5) + ", " + lng.toFixed(5);
+          const shortLabel = label.split(",").slice(0, 3).join(",").trim();
+
+          const btn = document.createElement("button");
+          btn.className = "primary";
+          btn.textContent = shortLabel;
+          btn.addEventListener("click", () => {
+            const zoom = Math.max(13, map.getZoom());
+            map.flyTo([lat, lng], zoom, { duration: 0.6 });
+            setSelected({ lat, lng, label: shortLabel });
+          });
+          container.appendChild(btn);
+        }
+      }
+
+      async function performSearch() {
+        const query = (document.getElementById("searchQuery")?.value || "").trim();
+        if (!query || query.length < 2) {
+          renderSearchResults([]);
+          return;
+        }
+
+        const container = document.getElementById("searchResults");
+        if (container) {
+          container.innerHTML = "";
+          const msg = document.createElement("div");
+          msg.className = "status muted small";
+          msg.textContent = "Searching…";
+          container.appendChild(msg);
+        }
+
+        const items = await searchNominatim(query);
+        renderSearchResults(items);
+      }
+
+      document.getElementById("searchGo").addEventListener("click", () => {
+        performSearch().catch((err) => statusLine("Search error: " + (err?.message ?? String(err))));
+      });
+      let __searchDebounce = null;
+      document.getElementById("searchQuery").addEventListener("input", () => {
+        if (__searchDebounce) clearTimeout(__searchDebounce);
+        __searchDebounce = setTimeout(() => {
+          performSearch().catch(() => {});
+        }, 260);
+      });
+      document.getElementById("searchQuery").addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          performSearch().catch((err) => statusLine("Search error: " + (err?.message ?? String(err))));
+        }
       });
 
       async function primeSelected(withCandidates) {
@@ -801,6 +944,10 @@ export async function handleAdmin(request, env) {
     const lng = bodyUnknown.lng;
     const radius_m = bodyUnknown.radius_m;
     if (typeof lat !== "number" || typeof lng !== "number") return errorResponse("Invalid lat/lng", 400);
+    if (!isSupportedLatLng(lat, lng)) {
+      await recordOutOfCoverageRequest(env, { lat, lng, source: "admin_prime" });
+      return errorResponse(outOfCoverageMessage(), 403, { code: "OUT_OF_COVERAGE" });
+    }
     if (typeof radius_m !== "number" || !Number.isInteger(radius_m) || radius_m <= 0) return errorResponse("Invalid radius_m", 400);
 
     const categories = Array.isArray(bodyUnknown.categories) ? bodyUnknown.categories : FIXED_CATEGORIES;
