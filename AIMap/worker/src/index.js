@@ -5,6 +5,7 @@ import { handleAdmin } from "./admin.js";
 import { handleCoverageReport } from "./coverageHandler.js";
 import { runPoiImageCron } from "./poiImageCron.js";
 import { handleImageProxy, handlePoiImagesApi } from "./poiImageApi.js";
+import { handleOverlay } from "./overlayHandler.js";
 import { errorResponse } from "./utils.js";
 
 function withCors(response) {
@@ -47,6 +48,9 @@ export default {
     }
     if (url.pathname === "/v1/map/area_facts") {
       return withCors(await handleAreaFacts(request, env));
+    }
+    if (url.pathname === "/v1/map/overlay") {
+      return withCors(await handleOverlay(request, env));
     }
     if (url.pathname === "/v1/map/nearby_cached") {
       return withCors(await handleNearbyCached(request, env));

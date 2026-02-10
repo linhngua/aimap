@@ -9,10 +9,13 @@
 CREATE TABLE IF NOT EXISTS poi_websites (
   poi_id TEXT PRIMARY KEY,
   website_url TEXT NOT NULL,
+  cell_id TEXT,
   updated_at INTEGER NOT NULL,
   last_crawled_date TEXT,
   enabled INTEGER NOT NULL DEFAULT 1
 );
+
+CREATE INDEX IF NOT EXISTS idx_poi_websites_cell_id ON poi_websites(cell_id);
 
 CREATE TABLE IF NOT EXISTS poi_image_candidates (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -54,4 +57,3 @@ CREATE TABLE IF NOT EXISTS poi_crawl_cursor (
 
 INSERT OR IGNORE INTO poi_crawl_cursor (cursor_key, date, last_poi_id, offset, updated_at)
 VALUES ('daily', '', '', 0, 0);
-

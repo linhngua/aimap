@@ -180,7 +180,8 @@ struct PlaceDetailResponse: Codable, Hashable {
     let headline: String
     let whyWorthIt: String
     let nearbyMoves: [NearbyMove]
-    let practical: [String]
+    let cuisine: String?
+    let bestDishes: [String]?
     var areaFunFact: [AreaFact]
     let confidence: PlaceDetailConfidence
     let disclosure: String

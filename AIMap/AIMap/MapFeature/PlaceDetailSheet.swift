@@ -20,6 +20,7 @@ struct PlaceDetailSheet: View {
         case openURL(URL)
         case call(String)
         case openInAppleMaps
+        case navigate
     }
 
     private struct Chip: Identifiable, Hashable {
@@ -37,6 +38,8 @@ struct PlaceDetailSheet: View {
                 return (systemImage ?? "") + "|" + text + "|" + number
             case .openInAppleMaps:
                 return (systemImage ?? "") + "|" + text + "|maps"
+            case .navigate:
+                return (systemImage ?? "") + "|" + text + "|navigate"
             }
         }
     }
@@ -46,10 +49,10 @@ struct PlaceDetailSheet: View {
             VStack(alignment: .leading, spacing: 16) {
                 heroImage
                 header
+                foodSection
                 whyWorthItSection
                 quickTakeSection
                 nearbyMovesSection
-                practicalSection
                 areaFunFactSection
                 disclosureFooter
             }
@@ -193,24 +196,37 @@ struct PlaceDetailSheet: View {
         }
     }
 
-    private var practicalSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Practical")
-                .font(.headline)
+    @ViewBuilder
+    private var foodSection: some View {
+        if place.normalizedPrimaryCategory == "restaurant" {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Food")
+                    .font(.headline)
 
-            if let detail, !detail.practical.isEmpty {
-                VStack(alignment: .leading, spacing: 8) {
-                    ForEach(detail.practical, id: \.self) { line in
-                        Text("• \(line)")
-                            .font(.subheadline)
-                            .foregroundStyle(.primary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
+                if let cuisine = detail?.cuisine, !cuisine.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    Text("Cuisine: \(cuisine)")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text("Cuisine: —")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
                 }
-            } else {
-                Text("Check the listing for up-to-date details.")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
+
+                if let dishes = detail?.bestDishes, !dishes.isEmpty {
+                    VStack(alignment: .leading, spacing: 6) {
+                        ForEach(dishes.prefix(5), id: \.self) { dish in
+                            Text("• \(dish)")
+                                .font(.subheadline)
+                                .foregroundStyle(.primary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                } else {
+                    Text("Dish ideas will appear here.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
             }
         }
     }
@@ -241,11 +257,7 @@ struct PlaceDetailSheet: View {
                                     .font(.subheadline)
                                     .foregroundStyle(.primary)
                                     .fixedSize(horizontal: false, vertical: true)
-                                Text(fact.source)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(1)
-                                    .padding(.leading, 14)
+                                // Source intentionally hidden in UI (keep verified fact text only).
                             }
                         }
                     }
@@ -287,6 +299,8 @@ struct PlaceDetailSheet: View {
         if let distanceChip {
             chips.append(distanceChip)
         }
+
+        chips.append(.init(text: "Navigate", systemImage: "arrow.triangle.turn.up.right.diamond.fill", action: .navigate))
 
         if let rating = place.rating {
             chips.append(.init(text: String(format: "%.1f", rating), systemImage: "star.fill", action: .none))
@@ -385,6 +399,12 @@ struct PlaceDetailSheet: View {
             } label: {
                 content
             }
+        case .navigate:
+            Button {
+                openDirectionsInAppleMaps()
+            } label: {
+                content
+            }
         }
     }
 
@@ -398,6 +418,22 @@ struct PlaceDetailSheet: View {
         let item = MKMapItem(placemark: placemark)
         item.name = place.name
         item.openInMaps(launchOptions: nil)
+    }
+
+    private func openDirectionsInAppleMaps() {
+        let destination: MKMapItem = {
+            if let mapItem { return mapItem }
+            let placemark = MKPlacemark(coordinate: place.coordinate)
+            let item = MKMapItem(placemark: placemark)
+            item.name = place.name
+            return item
+        }()
+
+        let launchOptions: [String: Any] = [
+            MKLaunchOptionsDirectionsModeKey: MKLaunchOptionsDirectionsModeDriving,
+        ]
+
+        MKMapItem.openMaps(with: [.forCurrentLocation(), destination], launchOptions: launchOptions)
     }
 
     private func makePhoneURL(_ raw: String) -> URL? {

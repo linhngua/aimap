@@ -9,10 +9,6 @@ import SwiftUI
 
 @main
 struct AIMapApp: App {
-    init() {
-        _ = GoogleMapsBootstrap.configureIfPossible()
-    }
-
     var body: some Scene {
         WindowGroup {
             ContentView()

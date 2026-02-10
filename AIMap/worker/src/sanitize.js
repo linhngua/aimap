@@ -285,11 +285,13 @@ function expectedPlaceMode(payload) {
   return hasReviewSnippets ? "signals" : "inference";
 }
 
-function buildPlaceDisclosure(mode) {
-  if (mode === "signals") {
-    return "Summary includes provided review snippets.";
-  }
-  return "AI inference based only on place metadata and nearby context.";
+function buildPlaceDisclosure(mode, { includeFoodNote = false } = {}) {
+  const base =
+    mode === "signals"
+      ? "Summary includes provided review snippets."
+      : "AI inference based only on place metadata and nearby context.";
+  if (!includeFoodNote) return base;
+  return `${base} Dish ideas (if shown) are suggestions and not verified menu items.`;
 }
 
 function normalizePrimaryCategory(value) {
@@ -379,28 +381,6 @@ function buildNearbyMoves(payload) {
   }));
 }
 
-function buildPractical(payload) {
-  const place = payload.place;
-  const mode = expectedPlaceMode(payload);
-
-  const practical = [];
-  if (place.url_exists === true) practical.push("Check the website for current hours/menu/details.");
-  if (place.phone_exists === true) practical.push("Call ahead if hours or availability matter.");
-
-  if (place.open_now === null && place.hours_summary === null) {
-    practical.push("Hours aren’t provided here; verify before you go.");
-  } else if (place.open_now === false) {
-    practical.push("Marked closed right now; verify hours before heading over.");
-  }
-
-  const ratingCount = Number.isInteger(place.rating_count) ? place.rating_count : 0;
-  if (mode === "inference" && ratingCount >= 500) {
-    practical.push("Likely busier at peak times (inference).");
-  }
-
-  return practical.map(stripQuotes).slice(0, 3);
-}
-
 export function sanitizePlaceDetailResponse(raw, payload) {
   const meta = {
     used_fallback: false,
@@ -414,10 +394,10 @@ export function sanitizePlaceDetailResponse(raw, payload) {
   const headline = coerceString(root.headline ?? root.title ?? root.headline_text, "").trim();
   const whyWorthIt = coerceString(root.why_worth_it ?? root.whyWorthIt ?? root.why, "").trim();
 
-  const disclosure = buildPlaceDisclosure(expectedMode);
+  const primary = normalizePrimaryCategory(payload.place.primary_category);
+  const disclosure = buildPlaceDisclosure(expectedMode, { includeFoodNote: primary === "restaurant" });
   const confidence = confidenceFromPayload(payload);
   const nearby_moves = buildNearbyMoves(payload);
-  const practical = buildPractical(payload);
   const area_fun_fact = areaFunFactsFromPayload(payload);
 
   let safeHeadline =
@@ -440,7 +420,6 @@ export function sanitizePlaceDetailResponse(raw, payload) {
   }
 
   if (safeWhy.length === 0) {
-    const primary = normalizePrimaryCategory(payload.place.primary_category);
     const areaParts = [
       payload.area_context?.neighborhood_name,
       payload.area_context?.city,
@@ -467,6 +446,27 @@ export function sanitizePlaceDetailResponse(raw, payload) {
     safeWhy = [line1, line2, line3].filter((l) => l.length > 0).join("\n");
   }
 
+  // Food enrichment (restaurant only).
+  let cuisine = null;
+  let best_dishes = [];
+  if (primary === "restaurant") {
+    const foodContext = isObject(payload?.food_context) ? payload.food_context : null;
+    const cuisineSignal = foodContext ? coerceString(foodContext.cuisine_from_osm, "").trim() : "";
+    const apiDishCandidates = foodContext ? coerceStringArray(foodContext.dish_candidates_from_api) : [];
+
+    const cuisineRaw = coerceString(root.cuisine ?? root.cuisine_type ?? root.cuisineType, "").trim();
+    const safeCuisine = stripQuotes((cuisineRaw || cuisineSignal).trim());
+    cuisine = safeCuisine.length > 0 ? safeCuisine.slice(0, 60) : null;
+
+    const llmDishes = coerceStringArray(root.best_dishes ?? root.bestDishes ?? root.dishes ?? root.dish_ideas);
+    const merged = llmDishes.length > 0 ? llmDishes : apiDishCandidates;
+    best_dishes = merged
+      .map(stripQuotes)
+      .map((d) => d.trim())
+      .filter((d) => d.length >= 2 && d.length <= 60)
+      .slice(0, 5);
+  }
+
   // Ensure 2–3 short lines.
   const lines = safeWhy
     .split("\n")
@@ -481,7 +481,8 @@ export function sanitizePlaceDetailResponse(raw, payload) {
     headline: safeHeadline,
     why_worth_it: lines.join("\n"),
     nearby_moves,
-    practical,
+    cuisine,
+    best_dishes,
     area_fun_fact,
     confidence,
     disclosure,

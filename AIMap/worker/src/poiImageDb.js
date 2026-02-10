@@ -6,19 +6,36 @@ function requireDb(env) {
   return db;
 }
 
-export async function upsertPoiWebsite(env, { poi_id, website_url }) {
+export async function upsertPoiWebsite(env, { poi_id, website_url, cell_id }) {
   if (typeof poi_id !== "string" || poi_id.length === 0) throw new Error("Invalid poi_id");
   if (typeof website_url !== "string" || website_url.length === 0) throw new Error("Invalid website_url");
   const db = requireDb(env);
   const now = Date.now();
-  await db
-    .prepare(
-      `INSERT INTO poi_websites (poi_id, website_url, updated_at, enabled)
-       VALUES (?, ?, ?, 1)
-       ON CONFLICT(poi_id) DO UPDATE SET website_url=excluded.website_url, updated_at=excluded.updated_at, enabled=1`,
-    )
-    .bind(poi_id, website_url, now)
-    .run();
+  const cellId = typeof cell_id === "string" && cell_id.length > 0 ? cell_id : null;
+
+  try {
+    await db
+      .prepare(
+        `INSERT INTO poi_websites (poi_id, website_url, cell_id, updated_at, enabled)
+         VALUES (?, ?, ?, ?, 1)
+         ON CONFLICT(poi_id) DO UPDATE SET website_url=excluded.website_url, cell_id=excluded.cell_id, updated_at=excluded.updated_at, enabled=1`,
+      )
+      .bind(poi_id, website_url, cellId, now)
+      .run();
+  } catch (err) {
+    const message = String(err);
+    if (!message.includes("cell_id")) throw err;
+
+    // Back-compat with older D1 schema (no `cell_id` column).
+    await db
+      .prepare(
+        `INSERT INTO poi_websites (poi_id, website_url, updated_at, enabled)
+         VALUES (?, ?, ?, 1)
+         ON CONFLICT(poi_id) DO UPDATE SET website_url=excluded.website_url, updated_at=excluded.updated_at, enabled=1`,
+      )
+      .bind(poi_id, website_url, now)
+      .run();
+  }
 }
 
 export async function getCrawlCursor(env) {
@@ -194,4 +211,3 @@ export async function listApprovedPoiImages(env, { poi_id, limit }) {
     .all();
   return Array.isArray(res?.results) ? res.results : [];
 }
-

@@ -283,7 +283,18 @@ export const PlaceDetailResponseSchema = {
     if (!isObject(input)) throw new Error("Invalid response");
     validateStrictKeys(
       input,
-      ["place_local_id", "mode", "headline", "why_worth_it", "nearby_moves", "practical", "area_fun_fact", "confidence", "disclosure"],
+      [
+        "place_local_id",
+        "mode",
+        "headline",
+        "why_worth_it",
+        "nearby_moves",
+        "cuisine",
+        "best_dishes",
+        "area_fun_fact",
+        "confidence",
+        "disclosure",
+      ],
       "response",
     );
     validateString(input.place_local_id, "place_local_id");
@@ -293,7 +304,13 @@ export const PlaceDetailResponseSchema = {
     if (typeof input.headline !== "string") throw new Error("Invalid headline");
     if (typeof input.why_worth_it !== "string") throw new Error("Invalid why_worth_it");
     validateArray(input.nearby_moves, "nearby_moves");
-    validateArray(input.practical, "practical");
+    if (input.cuisine !== null && input.cuisine !== undefined && typeof input.cuisine !== "string") {
+      throw new Error("Invalid cuisine");
+    }
+    if (input.best_dishes !== null && input.best_dishes !== undefined) {
+      validateArray(input.best_dishes, "best_dishes");
+      if (!input.best_dishes.every((x) => typeof x === "string")) throw new Error("Invalid best_dishes");
+    }
     validateArray(input.area_fun_fact, "area_fun_fact");
     if (!["low", "medium", "high"].includes(input.confidence)) {
       throw new Error("Invalid confidence");
@@ -306,7 +323,8 @@ export const PlaceDetailResponseSchema = {
       headline: input.headline,
       why_worth_it: input.why_worth_it,
       nearby_moves: input.nearby_moves,
-      practical: input.practical,
+      cuisine: typeof input.cuisine === "string" ? input.cuisine : null,
+      best_dishes: Array.isArray(input.best_dishes) ? input.best_dishes : [],
       area_fun_fact: input.area_fun_fact,
       confidence: input.confidence,
       disclosure: input.disclosure,

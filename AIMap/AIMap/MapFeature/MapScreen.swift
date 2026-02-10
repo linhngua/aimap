@@ -12,37 +12,20 @@ struct MapScreen: View {
     var body: some View {
         NavigationStack {
             ZStack(alignment: .top) {
-                if useGoogleMaps {
-                    GoogleLuxuryMapView(
-                        region: $viewModel.region,
-                        style: mapStyle,
-                        pins: pins,
-                        dropPinCoordinate: viewModel.lastTappedCoordinate,
-                        onTap: { coordinate in
-                            viewModel.handleMapTap(coordinate)
-                        },
-                        onSelectPin: { placeLocalId in
-                            if let place = viewModel.candidatesById[placeLocalId] {
-                                viewModel.selectPlace(place)
-                            }
+                LuxuryMapView(
+                    region: $viewModel.region,
+                    style: mapStyle,
+                    pins: pins,
+                    dropPinCoordinate: viewModel.lastTappedCoordinate,
+                    onTap: { coordinate in
+                        viewModel.handleMapTap(coordinate)
+                    },
+                    onSelectPin: { placeLocalId in
+                        if let place = viewModel.candidatesById[placeLocalId] {
+                            viewModel.selectPlace(place)
                         }
-                    )
-                } else {
-                    LuxuryMapView(
-                        region: $viewModel.region,
-                        style: mapStyle,
-                        pins: pins,
-                        dropPinCoordinate: viewModel.lastTappedCoordinate,
-                        onTap: { coordinate in
-                            viewModel.handleMapTap(coordinate)
-                        },
-                        onSelectPin: { placeLocalId in
-                            if let place = viewModel.candidatesById[placeLocalId] {
-                                viewModel.selectPlace(place)
-                            }
-                        }
-                    )
-                }
+                    }
+                )
 
                 VStack(spacing: 10) {
                     locationSearchBar
@@ -267,13 +250,6 @@ struct MapScreen: View {
                 .padding(10)
                 .background(.thinMaterial)
                 .clipShape(RoundedRectangle(cornerRadius: 12))
-            } else if !useGoogleMaps {
-                Text("Google Maps key missing — showing Apple Maps fallback.")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .padding(10)
-                    .background(.thinMaterial)
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
             } else if let message = viewModel.locationSearchErrorMessage {
                 Text(message)
                     .font(.footnote)
@@ -379,10 +355,6 @@ struct MapScreen: View {
                 isHighlighted: viewModel.selectedPlace?.placeLocalId == place.placeLocalId
             )
         }
-    }
-
-    private var useGoogleMaps: Bool {
-        GoogleMapsBootstrap.configureIfPossible()
     }
 }
 

@@ -7,6 +7,7 @@ import { errorResponse, getBypassCache, jsonResponse, safeLog } from "./utils.js
 import { parseJsonLoose, sanitizeNearbyResponse, sanitizePlaceDetailResponse } from "./sanitize.js";
 import { placeDetailCacheTtlSeconds } from "./config.js";
 import { isSupportedLatLng, outOfCoverageMessage, recordOutOfCoverageRequest } from "./coverage.js";
+import { fetchMealDbDishCandidates, fetchOsmFoodSignals } from "./foodEnrichment.js";
 
 export async function handleNearby(request, env) {
   let payloadUnknown;
@@ -130,12 +131,31 @@ export async function handlePlaceDetail(request, env) {
     }
   }
 
+  let food_context = undefined;
+  const primary = typeof payload?.place?.primary_category === "string" ? payload.place.primary_category.toLowerCase() : "";
+  if (primary.includes("rest") || primary.includes("food") || primary.includes("cafe")) {
+    const osm = await fetchOsmFoodSignals(env, {
+      name: payload.place.name,
+      lat: payload.place.lat,
+      lng: payload.place.lng,
+      radius_m: 800,
+    });
+    const cuisine = osm?.cuisine_from_osm ?? null;
+    const dish_candidates_from_api =
+      typeof cuisine === "string" && cuisine.length > 0 ? await fetchMealDbDishCandidates(env, cuisine) : [];
+    food_context = {
+      cuisine_from_osm: cuisine,
+      dish_candidates_from_api,
+      menu_url_from_osm: osm?.menu_url_from_osm ?? null,
+    };
+  }
+
   let llmText;
   try {
     llmText = await callPlaceLLM({
       env,
       systemPrompt: PLACE_SYSTEM_PROMPT,
-      payload,
+      payload: { ...payload, food_context },
       timeoutMs: 20_000,
       retries: 1,
     });
@@ -144,7 +164,7 @@ export async function handlePlaceDetail(request, env) {
   }
 
   const responseUnknown = parseJsonLoose(llmText);
-  const { response, meta } = sanitizePlaceDetailResponse(responseUnknown, payload);
+  const { response, meta } = sanitizePlaceDetailResponse(responseUnknown, { ...payload, food_context });
   safeLog(env, "[place] sanitize", meta);
 
   safeLog(env, "[place] ok", { place_local_id: response.place_local_id, mode: response.mode });

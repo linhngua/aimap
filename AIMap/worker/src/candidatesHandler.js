@@ -5,9 +5,11 @@ import { ingestCandidates } from "./candidatesStore.js";
 import { candidatesCacheTtlSeconds } from "./config.js";
 import { isSupportedLatLng, outOfCoverageMessage, recordOutOfCoverageRequest } from "./coverage.js";
 import { processQueuedPrimeIfAny } from "./primeQueue.js";
+import { upsertPoiWebsite } from "./poiImageDb.js";
 
 const MAX_LLM_CANDIDATES = 40;
 const FIXED_CATEGORIES_KEY = "abrs";
+const POI_WEBSITE_CELL_PRECISION = 6;
 
 function isObject(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -24,6 +26,30 @@ function geohashPrecisionForRadiusBucket(bucket) {
   if (bucket === 300) return 7;
   if (bucket === 800) return 6;
   return 5;
+}
+
+async function seedPoiWebsitesFromCandidates(env, candidates) {
+  const hasDb = env?.DB && typeof env.DB.prepare === "function";
+  if (!hasDb) return;
+  if (!Array.isArray(candidates) || candidates.length === 0) return;
+
+  const byPoiId = new Map();
+  for (const c of candidates) {
+    const poi_id = typeof c?.place_local_id === "string" ? c.place_local_id : "";
+    const website_url = typeof c?.url === "string" ? c.url.trim() : "";
+    if (!poi_id || !website_url) continue;
+    if (byPoiId.has(poi_id)) continue;
+    const cell_id = geohashEncode(c.lat, c.lng, POI_WEBSITE_CELL_PRECISION);
+    byPoiId.set(poi_id, { poi_id, website_url, cell_id });
+  }
+
+  for (const entry of byPoiId.values()) {
+    try {
+      await upsertPoiWebsite(env, entry);
+    } catch {
+      // Ignore D1 seed failures (optional feature).
+    }
+  }
 }
 
 export async function handleCandidatesIngest(request, env, ctx) {
@@ -82,6 +108,13 @@ export async function handleCandidatesIngest(request, env, ctx) {
       nowSeconds,
       ttlSeconds: candidatesCacheTtlSeconds(env),
     });
+
+    const seedPromise = seedPoiWebsitesFromCandidates(env, stored.candidates).catch(() => {});
+    if (ctx && typeof ctx.waitUntil === "function") {
+      ctx.waitUntil(seedPromise);
+    } else {
+      await seedPromise;
+    }
 
     if (env.OPENAI_API_KEY) {
       const primePromise = processQueuedPrimeIfAny(env, {
