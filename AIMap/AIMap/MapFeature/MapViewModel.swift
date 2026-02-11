@@ -299,7 +299,7 @@ final class MapViewModel: ObservableObject {
             if let ranked = rankedById[place.placeLocalId] {
                 return POIListItem(place: place, score: ranked.score, why: ranked.why, tags: ranked.tags)
             }
-            return POIListItem(place: place, score: fallbackScore(for: place), why: "From MapKit.", tags: fallbackTags(for: place))
+            return POIListItem(place: place, score: fallbackScore(for: place), why: "", tags: fallbackTags(for: place))
         }
         return items.sorted { lhs, rhs in
             if lhs.score != rhs.score { return lhs.score > rhs.score }
@@ -996,7 +996,7 @@ final class MapViewModel: ObservableObject {
             let item = NearbyRankedItem(
                 placeLocalId: place.placeLocalId,
                 score: score(for: place),
-                why: "From MapKit (unranked).",
+                why: "",
                 tags: tags(place),
                 bestFor: "a quick stop",
                 cautions: []

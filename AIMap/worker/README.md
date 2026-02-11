@@ -21,6 +21,7 @@ Cloudflare Worker backend for the AI-enhanced map feature.
   - `GET  /admin/poiimage` (admin UI)
   - `GET  /admin/poiimage/status`
   - `POST /admin/poiimage/crawl_one` (manual crawl one POI website; no LLM)
+  - `POST /admin/poiimage/crawl_batch` (crawl a prioritized batch from `poi_websites`; no LLM)
   - `POST /admin/poiimage/thumb_batch` (generate low-quality thumbs; no LLM)
   - `POST /admin/poiimage/filter_batch` (admin-only LLM filtering; thumb-only)
   - `GET  /api/poi/:poi_id/images` (approved images only, max 3)
@@ -91,6 +92,12 @@ Two separate pipelines:
 
 ```bash
 wrangler d1 execute <YOUR_DB_NAME> --file=worker/d1/poi_images.sql
+```
+
+Optional (existing DB only): add hit counters used for crawl prioritization:
+
+```bash
+wrangler d1 execute <YOUR_DB_NAME> --file=worker/d1/poi_images_migrate_hits.sql
 ```
 
 2) Create/bind R2 bucket `POI_IMAGES` (see `worker/wrangler.toml`).

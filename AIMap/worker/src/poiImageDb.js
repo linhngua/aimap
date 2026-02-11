@@ -93,10 +93,105 @@ export async function listNextPoiWebsitesToCrawl(env, { today, last_poi_id, limi
 export async function markPoiWebsiteCrawled(env, { poi_id, date }) {
   const db = requireDb(env);
   const now = Date.now();
-  await db
-    .prepare("UPDATE poi_websites SET last_crawled_date=?, updated_at=? WHERE poi_id=?")
-    .bind(date, now, poi_id)
-    .run();
+  try {
+    await db
+      .prepare("UPDATE poi_websites SET last_crawled_date=?, last_crawled_at=?, updated_at=? WHERE poi_id=?")
+      .bind(date, now, now, poi_id)
+      .run();
+  } catch (err) {
+    const message = String(err);
+    if (!message.includes("last_crawled_at")) throw err;
+    await db
+      .prepare("UPDATE poi_websites SET last_crawled_date=?, updated_at=? WHERE poi_id=?")
+      .bind(date, now, poi_id)
+      .run();
+  }
+}
+
+export async function recordPoiWebsiteHit(env, { poi_id, cell_id }) {
+  const db = requireDb(env);
+  const now = Date.now();
+  const cellId = typeof cell_id === "string" && cell_id.length > 0 ? cell_id : null;
+
+  try {
+    await db
+      .prepare(
+        `UPDATE poi_websites
+         SET hit_count=COALESCE(hit_count, 0) + 1,
+             last_hit_at=?,
+             cell_id=COALESCE(cell_id, ?),
+             updated_at=?
+         WHERE poi_id=?`,
+      )
+      .bind(now, cellId, now, poi_id)
+      .run();
+  } catch (err) {
+    const message = String(err);
+    if (!message.includes("hit_count") && !message.includes("last_hit_at")) throw err;
+    // Back-compat: ignore if the hit counter columns don't exist yet.
+  }
+}
+
+export async function listPoiWebsitesForCrawlBatch(env, { limit }) {
+  const db = requireDb(env);
+  const safeLimit = Number.isInteger(limit) ? Math.max(1, Math.min(100, limit)) : 10;
+
+  try {
+    const res = await db
+      .prepare(
+        `SELECT poi_id, website_url, hit_count, last_crawled_at, last_hit_at
+         FROM poi_websites
+         WHERE enabled = 1
+         ORDER BY
+           COALESCE(last_crawled_at, 0) ASC,
+           COALESCE(hit_count, 0) DESC,
+           COALESCE(last_hit_at, 0) DESC,
+           updated_at DESC
+         LIMIT ?`,
+      )
+      .bind(safeLimit)
+      .all();
+    const rows = Array.isArray(res?.results) ? res.results : [];
+    return rows
+      .map((r) => ({
+        poi_id: typeof r.poi_id === "string" ? r.poi_id : "",
+        website_url: typeof r.website_url === "string" ? r.website_url : "",
+        hit_count: typeof r.hit_count === "number" ? r.hit_count : 0,
+        last_crawled_at: typeof r.last_crawled_at === "number" ? r.last_crawled_at : null,
+        last_hit_at: typeof r.last_hit_at === "number" ? r.last_hit_at : null,
+      }))
+      .filter((r) => r.poi_id.length > 0 && r.website_url.length > 0);
+  } catch (err) {
+    const message = String(err);
+    if (!message.includes("hit_count") && !message.includes("last_crawled_at") && !message.includes("last_hit_at")) {
+      throw err;
+    }
+
+    // Back-compat: older schema, no hit counters.
+    const res = await db
+      .prepare(
+        `SELECT poi_id, website_url, last_crawled_date, updated_at
+         FROM poi_websites
+         WHERE enabled = 1
+         ORDER BY
+           CASE WHEN last_crawled_date IS NULL THEN 0 ELSE 1 END ASC,
+           last_crawled_date ASC,
+           updated_at DESC
+         LIMIT ?`,
+      )
+      .bind(safeLimit)
+      .all();
+    const rows = Array.isArray(res?.results) ? res.results : [];
+    return rows
+      .map((r) => ({
+        poi_id: typeof r.poi_id === "string" ? r.poi_id : "",
+        website_url: typeof r.website_url === "string" ? r.website_url : "",
+        hit_count: 0,
+        last_crawled_at: null,
+        last_hit_at: null,
+      }))
+      .filter((r) => r.poi_id.length > 0 && r.website_url.length > 0);
+  }
 }
 
 export async function upsertImageCandidate(env, { poi_id, source_url }) {

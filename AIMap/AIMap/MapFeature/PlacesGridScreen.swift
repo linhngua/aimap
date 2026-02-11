@@ -12,6 +12,8 @@ struct PlacesGridScreen: View {
     ]
 
     @State private var gridPlaces: [CandidatePlace] = []
+    @State private var scoresById: [String: Double] = [:]
+    @State private var allowScoreStarsById: Set<String> = []
     @State private var isLoadingMore: Bool = false
     @State private var outOfCoverageMessage: String?
 
@@ -20,10 +22,19 @@ struct PlacesGridScreen: View {
             LazyVGrid(columns: columns, spacing: 12) {
                 ForEach(gridPlaces) { place in
                     let mapItem = viewModel.mapItem(for: place.placeLocalId)
+                    let score = scoresById[place.placeLocalId]
+                    let allowScoreAsRating = allowScoreStarsById.contains(place.placeLocalId)
                     Button {
                         viewModel.selectPlace(place)
                     } label: {
-                        PlaceGridCard(place: place, mapItem: mapItem, origin: origin, accentColor: accentColor)
+                        PlaceGridCard(
+                            place: place,
+                            mapItem: mapItem,
+                            origin: origin,
+                            score: score,
+                            allowScoreAsRating: allowScoreAsRating,
+                            accentColor: accentColor
+                        )
                     }
                     .buttonStyle(.plain)
                 }
@@ -59,7 +70,7 @@ struct PlacesGridScreen: View {
             }
             .padding(.top, 8)
         }
-        .task(id: category) {
+        .task(id: refreshKey) {
             await loadPlaces()
         }
     }
@@ -68,10 +79,29 @@ struct PlacesGridScreen: View {
         viewModel.userLocation ?? viewModel.lastTappedCoordinate
     }
 
+    private var refreshKey: String {
+        let tierKey = viewModel.nearbyTier?.rawValue ?? "none"
+        let queryKey: String = {
+            guard let query = viewModel.nearbyPayload?.query else { return "none" }
+            let lat = String(format: "%.4f", query.lat)
+            let lng = String(format: "%.4f", query.lng)
+            return "\(lat),\(lng),\(query.radiusM)"
+        }()
+        return "\(category.rawValue)|\(tierKey)|\(queryKey)"
+    }
+
     private func loadPlaces() async {
-        let initial = viewModel.listItems(for: category).map(\.place)
+        let initialItems = viewModel.listItems(for: category)
+        let initial = initialItems.map(\.place)
+        let filteredInitial = filterToPlausibleNearby(initial, origin: origin)
         await MainActor.run {
-            gridPlaces = sortByDistance(initial, origin: origin)
+            scoresById = Dictionary(uniqueKeysWithValues: initialItems.map { ($0.place.placeLocalId, $0.score) })
+            allowScoreStarsById = Set(
+                initialItems
+                    .filter { !$0.why.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+                    .map { $0.place.placeLocalId }
+            )
+            gridPlaces = sortByDistance(filteredInitial, origin: origin)
             prefetchImages(for: gridPlaces)
         }
 
@@ -157,12 +187,24 @@ struct PlacesGridScreen: View {
             return dl < dr
         }
     }
+
+    private func filterToPlausibleNearby(_ places: [CandidatePlace], origin: CLLocationCoordinate2D?) -> [CandidatePlace] {
+        guard let origin else { return places }
+        let maxDistanceM = max(5_000, viewModel.radiusMeters * 8)
+        let a = CLLocation(latitude: origin.latitude, longitude: origin.longitude)
+        return places.filter { place in
+            let meters = a.distance(from: CLLocation(latitude: place.lat, longitude: place.lng))
+            return meters.isFinite && meters <= maxDistanceM
+        }
+    }
 }
 
 private struct PlaceGridCard: View {
     let place: CandidatePlace
     let mapItem: MKMapItem?
     let origin: CLLocationCoordinate2D?
+    let score: Double?
+    let allowScoreAsRating: Bool
     let accentColor: Color
 
     var body: some View {
@@ -188,19 +230,12 @@ private struct PlaceGridCard: View {
                             .foregroundStyle(.secondary)
                     }
 
-                    if let rating = place.rating {
-                        HStack(spacing: 4) {
-                            Image(systemName: "star.fill")
+                    if let ratingValue {
+                        HStack(spacing: 6) {
+                            RatingStarsView(rating: ratingValue, tint: accentColor, size: 11)
+                            Text(String(format: "%.1f", ratingValue))
                                 .font(.caption2)
-                                .foregroundStyle(accentColor)
-                            Text(String(format: "%.1f", rating))
-                                .font(.caption)
                                 .foregroundStyle(.secondary)
-                            if let count = place.ratingCount, count > 0 {
-                                Text("(\(count))")
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                            }
                         }
                     }
                 }
@@ -216,12 +251,33 @@ private struct PlaceGridCard: View {
         .padding(12)
         .background(
             RoundedRectangle(cornerRadius: 16)
-                .fill(Color(.secondarySystemBackground))
+                .fill(.ultraThinMaterial)
         )
         .overlay(
             RoundedRectangle(cornerRadius: 16)
-                .stroke(accentColor.opacity(0.18), lineWidth: 1)
+                .stroke(
+                    LinearGradient(
+                        colors: [
+                            accentColor.opacity(0.26),
+                            Color.white.opacity(0.10),
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ),
+                    lineWidth: 1
+                )
         )
+        .shadow(color: Color.black.opacity(0.18), radius: 12, x: 0, y: 8)
+    }
+
+    private var ratingValue: Double? {
+        if let rating = place.rating {
+            return max(0, min(5, rating))
+        }
+        if allowScoreAsRating, let score, score > 0.01 {
+            return max(0, min(5, score * 5))
+        }
+        return nil
     }
 
     private var distanceText: String? {
@@ -230,8 +286,10 @@ private struct PlaceGridCard: View {
         let b = CLLocation(latitude: place.lat, longitude: place.lng)
         let meters = a.distance(from: b)
         let formatter = MeasurementFormatter()
+        formatter.unitOptions = .naturalScale
         formatter.unitStyle = .short
-        formatter.numberFormatter.maximumFractionDigits = meters < 1000 ? 0 : 1
+        formatter.numberFormatter.maximumFractionDigits = 0
+        formatter.numberFormatter.minimumFractionDigits = 0
         return formatter.string(from: Measurement(value: meters, unit: UnitLength.meters))
     }
 }

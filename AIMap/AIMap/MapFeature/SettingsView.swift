@@ -35,19 +35,19 @@ struct SettingsView: View {
             }
 
             Section("Categories") {
-                Picker("Chip 1", selection: $slot1) {
+                Picker("Option 1", selection: $slot1) {
                     ForEach(CategoryPreferences.availableCategories) { category in
                         Text(category.title).tag(category)
                     }
                 }
 
-                Picker("Chip 2", selection: $slot2) {
+                Picker("Option 2", selection: $slot2) {
                     ForEach(CategoryPreferences.availableCategories) { category in
                         Text(category.title).tag(category)
                     }
                 }
 
-                Picker("Chip 3", selection: $slot3) {
+                Picker("Option 3", selection: $slot3) {
                     ForEach(CategoryPreferences.availableCategories) { category in
                         Text(category.title).tag(category)
                     }

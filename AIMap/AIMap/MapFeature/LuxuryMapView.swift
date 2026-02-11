@@ -20,6 +20,7 @@ struct LuxuryMapView: UIViewRepresentable {
     var dropPinCoordinate: CLLocationCoordinate2D?
     var onTap: (CLLocationCoordinate2D) -> Void
     var onSelectPin: (String) -> Void
+    var onSelectUserLocation: (CLLocationCoordinate2D) -> Void
 
     func makeUIView(context: Context) -> MKMapView {
         let mapView = MKMapView(frame: .zero)
@@ -48,7 +49,7 @@ struct LuxuryMapView: UIViewRepresentable {
     }
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(region: $region, style: style, onTap: onTap, onSelectPin: onSelectPin)
+        Coordinator(region: $region, style: style, onTap: onTap, onSelectPin: onSelectPin, onSelectUserLocation: onSelectUserLocation)
     }
 
     private func shouldUpdateRegion(_ current: MKCoordinateRegion, _ desired: MKCoordinateRegion) -> Bool {
@@ -63,15 +64,23 @@ struct LuxuryMapView: UIViewRepresentable {
         var style: LuxuryMapStyle
         private let onTap: (CLLocationCoordinate2D) -> Void
         private let onSelectPin: (String) -> Void
+        private let onSelectUserLocation: (CLLocationCoordinate2D) -> Void
 
         private var pendingRemovals: Set<String> = []
         private var lastAreaCellIds: Set<String> = []
 
-        init(region: Binding<MKCoordinateRegion>, style: LuxuryMapStyle, onTap: @escaping (CLLocationCoordinate2D) -> Void, onSelectPin: @escaping (String) -> Void) {
+        init(
+            region: Binding<MKCoordinateRegion>,
+            style: LuxuryMapStyle,
+            onTap: @escaping (CLLocationCoordinate2D) -> Void,
+            onSelectPin: @escaping (String) -> Void,
+            onSelectUserLocation: @escaping (CLLocationCoordinate2D) -> Void
+        ) {
             _region = region
             self.style = style
             self.onTap = onTap
             self.onSelectPin = onSelectPin
+            self.onSelectUserLocation = onSelectUserLocation
         }
 
         @objc func handleTap(_ recognizer: UITapGestureRecognizer) {
@@ -227,7 +236,13 @@ struct LuxuryMapView: UIViewRepresentable {
         }
 
         func mapView(_ mapView: MKMapView, viewFor annotation: MKAnnotation) -> MKAnnotationView? {
-            if annotation is MKUserLocation { return nil }
+            if annotation is MKUserLocation {
+                let view = (mapView.dequeueReusableAnnotationView(withIdentifier: LuxuryUserLocationAnnotationView.reuseIdentifier) as? LuxuryUserLocationAnnotationView)
+                    ?? LuxuryUserLocationAnnotationView(annotation: annotation, reuseIdentifier: LuxuryUserLocationAnnotationView.reuseIdentifier)
+                view.annotation = annotation
+                view.accentColor = style.accentColor
+                return view
+            }
             if annotation is LuxuryTapAnnotation {
                 let view = (mapView.dequeueReusableAnnotationView(withIdentifier: LuxuryTapAnnotationView.reuseIdentifier) as? LuxuryTapAnnotationView)
                     ?? LuxuryTapAnnotationView(annotation: annotation, reuseIdentifier: LuxuryTapAnnotationView.reuseIdentifier)
@@ -246,6 +261,12 @@ struct LuxuryMapView: UIViewRepresentable {
         }
 
         func mapView(_ mapView: MKMapView, didSelect view: MKAnnotationView) {
+            if let userLocation = view.annotation as? MKUserLocation, let coordinate = userLocation.location?.coordinate {
+                onSelectUserLocation(coordinate)
+                mapView.deselectAnnotation(userLocation, animated: false)
+                return
+            }
+
             guard let annotation = view.annotation as? LuxuryPlaceAnnotation else { return }
             onSelectPin(annotation.placeLocalId)
         }

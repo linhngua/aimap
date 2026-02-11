@@ -5,7 +5,7 @@ import { ingestCandidates } from "./candidatesStore.js";
 import { candidatesCacheTtlSeconds } from "./config.js";
 import { isSupportedLatLng, outOfCoverageMessage, recordOutOfCoverageRequest } from "./coverage.js";
 import { processQueuedPrimeIfAny } from "./primeQueue.js";
-import { upsertPoiWebsite } from "./poiImageDb.js";
+import { recordPoiWebsiteHit, upsertPoiWebsite } from "./poiImageDb.js";
 
 const MAX_LLM_CANDIDATES = 40;
 const FIXED_CATEGORIES_KEY = "abrs";
@@ -47,6 +47,7 @@ async function seedPoiWebsitesFromCandidates(env, candidates) {
   for (const entry of byPoiId.values()) {
     try {
       await upsertPoiWebsite(env, entry);
+      await recordPoiWebsiteHit(env, { poi_id: entry.poi_id, cell_id: entry.cell_id });
     } catch {
       // Ignore D1 seed failures (optional feature).
     }

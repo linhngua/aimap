@@ -17,9 +17,9 @@ struct LuxuryMapStyle: Equatable {
     var showsBuildings: Bool
 
     static let premium = LuxuryMapStyle(
-        backgroundTone: UIColor(red: 0.05, green: 0.07, blue: 0.10, alpha: 1),
+        backgroundTone: UIColor(red: 0.08, green: 0.10, blue: 0.14, alpha: 1),
         accentColor: UIColor(red: 0.84, green: 0.76, blue: 0.55, alpha: 1),
-        labelDensity: .low,
+        labelDensity: .standard,
         forceDarkAppearance: true,
         showsApplePointsOfInterest: false,
         showsTraffic: false,

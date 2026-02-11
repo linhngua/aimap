@@ -12,6 +12,9 @@ CREATE TABLE IF NOT EXISTS poi_websites (
   cell_id TEXT,
   updated_at INTEGER NOT NULL,
   last_crawled_date TEXT,
+  last_crawled_at INTEGER,
+  hit_count INTEGER NOT NULL DEFAULT 0,
+  last_hit_at INTEGER,
   enabled INTEGER NOT NULL DEFAULT 1
 );
 

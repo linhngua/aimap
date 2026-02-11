@@ -25,11 +25,14 @@ struct MapScreen: View {
                         if let place = viewModel.candidatesById[placeLocalId] {
                             viewModel.selectPlace(place)
                         }
+                    },
+                    onSelectUserLocation: { coordinate in
+                        viewModel.handleMapTap(coordinate)
                     }
                 )
+                .ignoresSafeArea()
 
                 VStack(spacing: 10) {
-                    locationSearchBar
                     locationSuggestions
                     categoryChips
                     statusBanner
@@ -40,6 +43,8 @@ struct MapScreen: View {
             }
             .navigationBarTitleDisplayMode(.inline)
             .tint(Color(uiColor: mapStyle.accentColor))
+            .toolbarBackground(.clear, for: .navigationBar)
+            .toolbarBackground(.visible, for: .navigationBar)
             .navigationDestination(for: POICategory.self) { category in
                 PlacesGridScreen(viewModel: viewModel, category: category, accentColor: Color(uiColor: mapStyle.accentColor))
             }
@@ -52,11 +57,7 @@ struct MapScreen: View {
                     }
                 }
                 ToolbarItem(placement: .principal) {
-                    Text("AI MAP")
-                        .font(.caption)
-                        .fontWeight(.regular)
-                        .foregroundStyle(Color(uiColor: mapStyle.accentColor))
-                        .accessibilityAddTraits(.isHeader)
+                    toolbarSearchBar
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
@@ -129,6 +130,7 @@ struct MapScreen: View {
                 }
                 .onSubmit {
                     viewModel.searchForLocation(locationQuery)
+                    searchCompleter.clear()
                     isSearchFocused = false
                 }
 
@@ -147,7 +149,7 @@ struct MapScreen: View {
         }
         .padding(.vertical, 10)
         .padding(.horizontal, 12)
-        .background(.thinMaterial)
+        .background(.ultraThinMaterial)
         .clipShape(RoundedRectangle(cornerRadius: 14))
         .overlay(
             RoundedRectangle(cornerRadius: 14)
@@ -156,9 +158,55 @@ struct MapScreen: View {
         .padding(.horizontal)
     }
 
+    private var toolbarSearchBar: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "magnifyingglass")
+                .foregroundStyle(.secondary)
+
+            TextField("Search location", text: $locationQuery)
+                .textInputAutocapitalization(.words)
+                .autocorrectionDisabled()
+                .submitLabel(.search)
+                .focused($isSearchFocused)
+                .onChange(of: locationQuery) { _, newValue in
+                    searchCompleter.update(query: newValue, region: viewModel.region)
+                }
+                .onSubmit {
+                    viewModel.searchForLocation(locationQuery)
+                    searchCompleter.clear()
+                    isSearchFocused = false
+                }
+
+            if viewModel.isSearchingLocation {
+                ProgressView()
+            } else if !locationQuery.isEmpty {
+                Button {
+                    locationQuery = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Clear search")
+            }
+        }
+        .padding(.vertical, 8)
+        .padding(.horizontal, 10)
+        .background(.ultraThinMaterial)
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(Color(uiColor: mapStyle.accentColor).opacity(0.22), lineWidth: 1)
+        )
+        .frame(maxWidth: 520)
+    }
+
     private var locationSuggestions: some View {
         Group {
-            if isSearchFocused, searchCompleter.shouldShowSuggestions {
+            let trimmedQuery = locationQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+            let shouldSuggest = trimmedQuery.count >= 2
+                && (isSearchFocused || searchCompleter.isLoading || !searchCompleter.results.isEmpty)
+            if shouldSuggest {
                 VStack(spacing: 0) {
                     if searchCompleter.isLoading {
                         HStack(spacing: 10) {
@@ -212,7 +260,7 @@ struct MapScreen: View {
                         }
                     }
                 }
-                .background(.thinMaterial)
+                .background(.ultraThinMaterial)
                 .clipShape(RoundedRectangle(cornerRadius: 14))
                 .overlay(
                     RoundedRectangle(cornerRadius: 14)
@@ -249,73 +297,81 @@ struct MapScreen: View {
                     Text("Finding nearby places…")
                 }
                 .padding(10)
-                .background(.thinMaterial)
+                .background(.ultraThinMaterial)
                 .clipShape(RoundedRectangle(cornerRadius: 12))
             } else if let message = viewModel.locationSearchErrorMessage {
                 Text(message)
                     .font(.footnote)
                     .foregroundStyle(.red)
                     .padding(10)
-                    .background(.thinMaterial)
+                    .background(.ultraThinMaterial)
                     .clipShape(RoundedRectangle(cornerRadius: 12))
             } else if let message = viewModel.nearbyErrorMessage {
                 Text(message)
                     .font(.footnote)
                     .foregroundStyle(.red)
                     .padding(10)
-                    .background(.thinMaterial)
+                    .background(.ultraThinMaterial)
                     .clipShape(RoundedRectangle(cornerRadius: 12))
             } else if viewModel.nearbyPayload == nil {
                 Text("Tap anywhere on the map to search.")
                     .font(.footnote)
                     .padding(10)
-                    .background(.thinMaterial)
+                    .background(.ultraThinMaterial)
                     .clipShape(RoundedRectangle(cornerRadius: 12))
             } else if viewModel.nearbyAccuracy == .approx {
                 Text("Showing nearby cached results (approx).")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                     .padding(10)
-                    .background(.thinMaterial)
+                    .background(.ultraThinMaterial)
                     .clipShape(RoundedRectangle(cornerRadius: 12))
             }
         }
     }
 
     private var resultsList: some View {
-        VStack(spacing: 0) {
+        Group {
             if viewModel.nearbyPayload != nil {
-                List {
-                    ForEach(viewModel.listItemsForSelectedCategory) { item in
-                        let place = item.place
-                        Button {
-                            viewModel.selectPlace(place)
-                        } label: {
-                            VStack(alignment: .leading, spacing: 6) {
-                                HStack {
-                                    Text(place.name)
-                                        .font(.headline)
-                                    Spacer()
-                                    ratingView(for: place)
-                                    Text(String(format: "%.2f", item.score))
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                }
-                                Text(place.addressShort)
-                                    .font(.subheadline)
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(1)
-                                Text(item.why)
-                                    .font(.footnote)
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(2)
+                ScrollView(showsIndicators: false) {
+                    LazyVStack(spacing: 10) {
+                        ForEach(viewModel.listItemsForSelectedCategory) { item in
+                            let place = item.place
+                            Button {
+                                viewModel.selectPlace(place)
+                            } label: {
+                                PlaceListRow(
+                                    place: place,
+                                    score: item.score,
+                                    why: item.why,
+                                    accent: Color(uiColor: mapStyle.accentColor)
+                                )
                             }
+                            .buttonStyle(.plain)
                         }
                     }
+                    .padding(12)
                 }
-                .listStyle(.plain)
-                .frame(maxHeight: 320)
-                .clipShape(RoundedRectangle(cornerRadius: 14))
+                .frame(maxHeight: 340)
+                .background(
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .fill(.ultraThinMaterial)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .stroke(
+                            LinearGradient(
+                                colors: [
+                                    Color(uiColor: mapStyle.accentColor).opacity(0.28),
+                                    Color.white.opacity(0.10),
+                                ],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            ),
+                            lineWidth: 1
+                        )
+                )
+                .shadow(color: Color.black.opacity(0.22), radius: 18, x: 0, y: 10)
                 .padding(.horizontal)
                 .padding(.bottom, 10)
             }
@@ -324,25 +380,6 @@ struct MapScreen: View {
 
     private var visibleCategories: [POICategory] {
         CategoryPreferences.normalize(CategoryPreferences.decode(visibleCategoriesRaw))
-    }
-
-    @ViewBuilder
-    private func ratingView(for place: CandidatePlace) -> some View {
-        if let rating = place.rating {
-            HStack(spacing: 4) {
-                Image(systemName: "star.fill")
-                    .font(.caption2)
-                    .foregroundStyle(Color(uiColor: mapStyle.accentColor))
-                Text(String(format: "%.1f", rating))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                if let count = place.ratingCount, count > 0 {
-                    Text("(\(count))")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-            }
-        }
     }
 
     private var pins: [LuxuryMapPin] {
@@ -356,6 +393,79 @@ struct MapScreen: View {
                 isHighlighted: viewModel.selectedPlace?.placeLocalId == place.placeLocalId
             )
         }
+    }
+}
+
+private struct PlaceListRow: View {
+    let place: CandidatePlace
+    let score: Double
+    let why: String
+    let accent: Color
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(place.name)
+                    .font(.headline)
+                    .foregroundStyle(.primary)
+                    .lineLimit(2)
+
+                if !place.addressShort.isEmpty {
+                    Text(place.addressShort)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+
+                let trimmedWhy = why.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmedWhy.isEmpty {
+                    Text(trimmedWhy)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+            }
+
+            Spacer(minLength: 0)
+
+            ratingColumn
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(.thinMaterial)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(accent.opacity(0.18), lineWidth: 1)
+        )
+    }
+
+    private var ratingColumn: some View {
+        let trimmedWhy = why.trimmingCharacters(in: .whitespacesAndNewlines)
+        let ratingValue: Double? = {
+            if let rating = place.rating { return max(0, min(5, rating)) }
+            guard !trimmedWhy.isEmpty else { return nil }
+            return max(0, min(5, score * 5))
+        }()
+
+        return VStack(alignment: .trailing, spacing: 4) {
+            if let ratingValue {
+                RatingStarsView(rating: ratingValue, tint: accent, size: 11)
+                Text(String(format: "%.1f", ratingValue))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            } else {
+                Text("—")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .frame(minWidth: 62, alignment: .trailing)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(
+            ratingValue.map { "Rating \(String(format: "%.1f", $0)) out of 5" } ?? "No rating"
+        )
     }
 }
 
@@ -386,7 +496,11 @@ private struct CategoryChip: View {
             .padding(.horizontal, 12)
             .background(
                 RoundedRectangle(cornerRadius: 16)
-                    .fill(isSelected ? accent.opacity(0.16) : Color(.secondarySystemBackground))
+                    .fill(.ultraThinMaterial)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 16)
+                    .fill(isSelected ? accent.opacity(0.12) : Color.clear)
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 16)
@@ -453,14 +567,19 @@ private final class LocationSearchCompleter: NSObject, ObservableObject, MKLocal
         completer.queryFragment = ""
     }
 
-    func completerDidUpdateResults(_ completer: MKLocalSearchCompleter) {
-        isLoading = false
-        results = Array(completer.results.prefix(10))
+    nonisolated func completerDidUpdateResults(_ completer: MKLocalSearchCompleter) {
+        let nextResults = Array(completer.results.prefix(10))
+        Task { @MainActor in
+            isLoading = false
+            results = nextResults
+        }
     }
 
-    func completer(_ completer: MKLocalSearchCompleter, didFailWithError error: Error) {
+    nonisolated func completer(_ completer: MKLocalSearchCompleter, didFailWithError error: Error) {
         _ = error
-        isLoading = false
-        results = []
+        Task { @MainActor in
+            isLoading = false
+            results = []
+        }
     }
 }

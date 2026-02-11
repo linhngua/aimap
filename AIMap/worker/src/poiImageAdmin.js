@@ -1,6 +1,6 @@
 import { jsonResponse, errorResponse } from "./utils.js";
 import { crawlOnePoiWebsite } from "./poiImageCrawl.js";
-import { countCandidatesByStatus, upsertPoiWebsite } from "./poiImageDb.js";
+import { countCandidatesByStatus, listPoiWebsitesForCrawlBatch, markPoiWebsiteCrawled, upsertPoiWebsite } from "./poiImageDb.js";
 import { filterBatch, generateThumbBatch } from "./poiImagePipeline.js";
 
 function isObject(value) {
@@ -73,6 +73,15 @@ function adminHtml() {
           <button id="crawlOne" class="primary">Crawl one</button>
         </div>
         <div class="muted" style="margin-top:10px">Extracts up to 5 candidate image URLs (og:image, twitter:image, image_src, img src).</div>
+      </div>
+
+      <div class="card">
+        <div class="label">Batch crawl (from cached POI websites)</div>
+        <div class="row">
+          <input id="crawlBatchLimit" type="number" min="1" max="100" value="15" />
+          <button id="crawlBatch" class="primary">Crawl batch</button>
+        </div>
+        <div class="muted" style="margin-top:10px">Uses the seeded POI website cache (from app candidate ingestion). Prioritizes stale and higher-hit POIs.</div>
       </div>
 
       <div class="card">
@@ -161,6 +170,17 @@ function adminHtml() {
         }
       });
 
+      document.getElementById("crawlBatch").addEventListener("click", async () => {
+        try {
+          const limit = Number.parseInt(document.getElementById("crawlBatchLimit").value, 10);
+          const data = await api("/admin/poiimage/crawl_batch", { limit });
+          document.getElementById("out").textContent = JSON.stringify(data, null, 2);
+          refreshStatus().catch(() => {});
+        } catch (err) {
+          document.getElementById("out").textContent = "Batch crawl error: " + err.message;
+        }
+      });
+
       document.getElementById("thumbBatch").addEventListener("click", async () => {
         try {
           const limit = Number.parseInt(document.getElementById("thumbLimit").value, 10);
@@ -232,6 +252,40 @@ export async function maybeHandlePoiImageAdmin(request, env) {
     return jsonResponse({ status: "ok", ...result });
   }
 
+  if (url.pathname === "/admin/poiimage/crawl_batch" && request.method === "POST") {
+    const auth = requireAdminToken(request, env);
+    if (!auth.ok) return auth.response;
+
+    let bodyUnknown;
+    try {
+      bodyUnknown = await request.json();
+    } catch {
+      return errorResponse("Invalid JSON", 400);
+    }
+    const limit = isObject(bodyUnknown) ? bodyUnknown.limit : undefined;
+    const parsedLimit = Number.isInteger(limit) ? limit : 15;
+
+    const today = new Date().toISOString().slice(0, 10);
+    const start = Date.now();
+    const timeBudgetMs = 25_000;
+
+    const selected = await listPoiWebsitesForCrawlBatch(env, { limit: parsedLimit });
+    const results = [];
+    for (const entry of selected) {
+      const elapsed = Date.now() - start;
+      if (elapsed > timeBudgetMs - 1200) break;
+      try {
+        const out = await crawlOnePoiWebsite(env, { poi_id: entry.poi_id, website_url: entry.website_url, maxCandidates: 5 });
+        await markPoiWebsiteCrawled(env, { poi_id: entry.poi_id, date: today });
+        results.push({ poi_id: entry.poi_id, website_url: entry.website_url, extracted: out.extracted, hit_count: entry.hit_count ?? 0 });
+      } catch (err) {
+        results.push({ poi_id: entry.poi_id, website_url: entry.website_url, error: String(err), hit_count: entry.hit_count ?? 0 });
+      }
+    }
+
+    return jsonResponse({ status: "ok", requested: parsedLimit, selected: selected.length, processed: results.length, results });
+  }
+
   if (url.pathname === "/admin/poiimage/thumb_batch" && request.method === "POST") {
     const auth = requireAdminToken(request, env);
     if (!auth.ok) return auth.response;
@@ -267,4 +321,3 @@ export async function maybeHandlePoiImageAdmin(request, env) {
 
   return null;
 }
-

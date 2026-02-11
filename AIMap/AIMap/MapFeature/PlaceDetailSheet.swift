@@ -54,7 +54,6 @@ struct PlaceDetailSheet: View {
                 quickTakeSection
                 nearbyMovesSection
                 areaFunFactSection
-                disclosureFooter
             }
             .padding()
         }
@@ -251,7 +250,7 @@ struct PlaceDetailSheet: View {
                     .transition(.opacity)
                 } else {
                     VStack(alignment: .leading, spacing: 10) {
-                        ForEach(facts.prefix(2)) { fact in
+                        ForEach(facts.prefix(1)) { fact in
                             VStack(alignment: .leading, spacing: 3) {
                                 Text("• \(fact.fact)")
                                     .font(.subheadline)
@@ -267,28 +266,6 @@ struct PlaceDetailSheet: View {
             .animation(.easeInOut(duration: 0.18), value: facts)
         }
         .padding(.top, 2)
-    }
-
-    private var disclosureFooter: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            if let detail {
-                HStack(spacing: 10) {
-                    Text(detail.disclosure)
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-
-                    Spacer(minLength: 0)
-
-                    confidencePill(detail.confidence)
-                }
-            } else {
-                Text("AI inference based only on place metadata and nearby context.")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .padding(.top, 4)
     }
 
     private var quickChips: [Chip] {
