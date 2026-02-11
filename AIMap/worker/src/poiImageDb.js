@@ -194,6 +194,127 @@ export async function listPoiWebsitesForCrawlBatch(env, { limit }) {
   }
 }
 
+export async function listPoiWebsiteStatus(env, { limit }) {
+  const db = requireDb(env);
+  const safeLimit = Number.isInteger(limit) ? Math.max(1, Math.min(200, limit)) : 50;
+
+  try {
+    const res = await db
+      .prepare(
+        `SELECT
+           w.poi_id,
+           w.website_url,
+           w.cell_id,
+           COALESCE(w.hit_count, 0) AS hit_count,
+           w.last_hit_at,
+           w.last_crawled_at,
+           w.last_crawled_date,
+           (SELECT COUNT(*) FROM poi_image_candidates c WHERE c.poi_id = w.poi_id) AS candidates_total,
+           (SELECT COUNT(*) FROM poi_images i WHERE i.poi_id = w.poi_id) AS approved_total,
+           (SELECT i.r2_key_thumb
+              FROM poi_images i
+             WHERE i.poi_id = w.poi_id
+             ORDER BY i.score DESC, i.created_at DESC
+             LIMIT 1) AS approved_thumb_key,
+           (SELECT c.thumb_r2_key
+              FROM poi_image_candidates c
+             WHERE c.poi_id = w.poi_id AND c.thumb_r2_key IS NOT NULL
+             ORDER BY c.discovered_at DESC
+             LIMIT 1) AS candidate_thumb_key
+         FROM poi_websites w
+         WHERE w.enabled = 1
+         ORDER BY
+           COALESCE(w.last_crawled_at, 0) ASC,
+           COALESCE(w.hit_count, 0) DESC,
+           COALESCE(w.last_hit_at, 0) DESC,
+           w.updated_at DESC
+         LIMIT ?`,
+      )
+      .bind(safeLimit)
+      .all();
+
+    const rows = Array.isArray(res?.results) ? res.results : [];
+    return rows
+      .map((r) => {
+        const approved = typeof r.approved_thumb_key === "string" ? r.approved_thumb_key : null;
+        const candidate = typeof r.candidate_thumb_key === "string" ? r.candidate_thumb_key : null;
+        const thumbKey = approved || candidate;
+        return {
+          poi_id: typeof r.poi_id === "string" ? r.poi_id : "",
+          website_url: typeof r.website_url === "string" ? r.website_url : "",
+          cell_id: typeof r.cell_id === "string" ? r.cell_id : null,
+          hit_count: typeof r.hit_count === "number" ? r.hit_count : 0,
+          last_hit_at: typeof r.last_hit_at === "number" ? r.last_hit_at : null,
+          last_crawled_at: typeof r.last_crawled_at === "number" ? r.last_crawled_at : null,
+          last_crawled_date: typeof r.last_crawled_date === "string" ? r.last_crawled_date : null,
+          candidates_total: typeof r.candidates_total === "number" ? r.candidates_total : 0,
+          approved_total: typeof r.approved_total === "number" ? r.approved_total : 0,
+          thumb_r2_key: thumbKey,
+          thumb_source: approved ? "approved" : candidate ? "candidate" : null,
+        };
+      })
+      .filter((r) => r.poi_id.length > 0 && r.website_url.length > 0);
+  } catch (err) {
+    const message = String(err);
+    if (!message.includes("hit_count") && !message.includes("last_crawled_at") && !message.includes("last_hit_at")) {
+      throw err;
+    }
+
+    // Back-compat: older schema, no hit counters.
+    const res = await db
+      .prepare(
+        `SELECT
+           w.poi_id,
+           w.website_url,
+           w.cell_id,
+           w.last_crawled_date,
+           (SELECT COUNT(*) FROM poi_image_candidates c WHERE c.poi_id = w.poi_id) AS candidates_total,
+           (SELECT COUNT(*) FROM poi_images i WHERE i.poi_id = w.poi_id) AS approved_total,
+           (SELECT i.r2_key_thumb
+              FROM poi_images i
+             WHERE i.poi_id = w.poi_id
+             ORDER BY i.score DESC, i.created_at DESC
+             LIMIT 1) AS approved_thumb_key,
+           (SELECT c.thumb_r2_key
+              FROM poi_image_candidates c
+             WHERE c.poi_id = w.poi_id AND c.thumb_r2_key IS NOT NULL
+             ORDER BY c.discovered_at DESC
+             LIMIT 1) AS candidate_thumb_key
+         FROM poi_websites w
+         WHERE w.enabled = 1
+         ORDER BY
+           CASE WHEN w.last_crawled_date IS NULL THEN 0 ELSE 1 END ASC,
+           w.last_crawled_date ASC,
+           w.updated_at DESC
+         LIMIT ?`,
+      )
+      .bind(safeLimit)
+      .all();
+
+    const rows = Array.isArray(res?.results) ? res.results : [];
+    return rows
+      .map((r) => {
+        const approved = typeof r.approved_thumb_key === "string" ? r.approved_thumb_key : null;
+        const candidate = typeof r.candidate_thumb_key === "string" ? r.candidate_thumb_key : null;
+        const thumbKey = approved || candidate;
+        return {
+          poi_id: typeof r.poi_id === "string" ? r.poi_id : "",
+          website_url: typeof r.website_url === "string" ? r.website_url : "",
+          cell_id: typeof r.cell_id === "string" ? r.cell_id : null,
+          hit_count: 0,
+          last_hit_at: null,
+          last_crawled_at: null,
+          last_crawled_date: typeof r.last_crawled_date === "string" ? r.last_crawled_date : null,
+          candidates_total: typeof r.candidates_total === "number" ? r.candidates_total : 0,
+          approved_total: typeof r.approved_total === "number" ? r.approved_total : 0,
+          thumb_r2_key: thumbKey,
+          thumb_source: approved ? "approved" : candidate ? "candidate" : null,
+        };
+      })
+      .filter((r) => r.poi_id.length > 0 && r.website_url.length > 0);
+  }
+}
+
 export async function upsertImageCandidate(env, { poi_id, source_url }) {
   const db = requireDb(env);
   const now = Date.now();

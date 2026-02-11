@@ -330,6 +330,8 @@ struct PlaceDetailSheet: View {
         let formatter = MeasurementFormatter()
         formatter.unitOptions = .naturalScale
         formatter.unitStyle = .short
+        formatter.numberFormatter.maximumFractionDigits = 0
+        formatter.numberFormatter.minimumFractionDigits = 0
         return formatter.string(from: Measurement(value: meters, unit: UnitLength.meters))
     }
 

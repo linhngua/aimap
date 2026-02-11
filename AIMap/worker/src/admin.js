@@ -961,12 +961,13 @@ export async function handleAdmin(request, env) {
 
     const categories = Array.isArray(bodyUnknown.categories) ? bodyUnknown.categories : FIXED_CATEGORIES;
     const categories_key = categoriesKey(categories);
-    const bucket = radiusBucket(radius_m);
-    const precision = geohashPrecisionForRadiusBucket(bucket);
+    const requestedBucket = radiusBucket(radius_m);
+    const precision = geohashPrecisionForRadiusBucket(requestedBucket);
     const cell_id = typeof bodyUnknown.cell_id === "string" && bodyUnknown.cell_id.length > 0 ? bodyUnknown.cell_id : geohashEncode(lat, lng, precision);
     const allowApprox = bodyUnknown.allow_approx_candidates !== false;
     const bypassCache = getBypassCache(request);
 
+    let candidateRadiusBucketUsed = requestedBucket;
     let candidates = null;
     let candidateSource = { accuracy: "exact", source_cell_id: null, source_distance_m: null };
     if (Array.isArray(bodyUnknown.candidates) && bodyUnknown.candidates.length > 0) {
@@ -982,7 +983,7 @@ export async function handleAdmin(request, env) {
           lat,
           lng,
           cell_id,
-          radius_bucket: bucket,
+          radius_bucket: requestedBucket,
           candidates,
           nowSeconds: Math.floor(Date.now() / 1000),
           ttlSeconds: candidatesCacheTtlSeconds(env),
@@ -991,14 +992,33 @@ export async function handleAdmin(request, env) {
         safeLog(env, "[admin prime] candidates_ingest_failed", { err: String(err) });
       }
 	    } else {
-	      const best = await getBestCandidateSource(env, { lat, lng }, { radius_bucket: bucket, cell_id });
+	      let best = await getBestCandidateSource(env, { lat, lng }, { radius_bucket: requestedBucket, cell_id });
+	      if (!best) {
+          // Best-effort fallback: if the requested radius bucket has no candidates yet,
+          // try other buckets to avoid a "queued" response when we can still prime safely.
+          for (const altBucket of [300, 800, 1500]) {
+            if (altBucket === requestedBucket) continue;
+            best = await getBestCandidateSource(env, { lat, lng }, { radius_bucket: altBucket, cell_id });
+            if (best) {
+              candidateRadiusBucketUsed = altBucket;
+              // Using mismatched-radius candidates is inherently approximate.
+              candidateSource = {
+                accuracy: "approx",
+                source_cell_id: best.cell_id,
+                source_distance_m: typeof best.source_distance_m === "number" ? best.source_distance_m : null,
+              };
+              break;
+            }
+          }
+        }
+
 	      if (!best) {
 	        await queuePrime(env, {
 	          lat,
 	          lng,
 	          radius_m,
 	          cell_id,
-	          radius_bucket: bucket,
+	          radius_bucket: requestedBucket,
 	          categories,
 	          categories_key,
 	        });
@@ -1024,7 +1044,8 @@ export async function handleAdmin(request, env) {
 
     safeLog(env, "[admin prime] request", {
       cell_id,
-      radius_bucket: bucket,
+      radius_bucket: requestedBucket,
+      candidate_radius_bucket_used: candidateRadiusBucketUsed,
       bypass_cache: bypassCache,
       candidates: candidates.length,
     });
@@ -1061,9 +1082,10 @@ export async function handleAdmin(request, env) {
       accuracy: candidateSource.accuracy,
       source_cell_id: candidateSource.source_cell_id,
       source_distance_m: candidateSource.source_distance_m,
+      source_radius_bucket: candidateRadiusBucketUsed,
     };
 
-    const latestKey = nearbyLatestKey({ cell_id, radius_bucket: bucket, categories_key });
+    const latestKey = nearbyLatestKey({ cell_id, radius_bucket: requestedBucket, categories_key });
     await kvPutJson(env, latestKey, cacheValue, nearbyCacheTtlSeconds(env));
 
     return jsonResponse({ status: "ok", cell_id, etag });

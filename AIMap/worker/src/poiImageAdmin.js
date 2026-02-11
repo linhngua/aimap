@@ -1,6 +1,12 @@
 import { jsonResponse, errorResponse } from "./utils.js";
 import { crawlOnePoiWebsite } from "./poiImageCrawl.js";
-import { countCandidatesByStatus, listPoiWebsitesForCrawlBatch, markPoiWebsiteCrawled, upsertPoiWebsite } from "./poiImageDb.js";
+import {
+  countCandidatesByStatus,
+  listPoiWebsiteStatus,
+  listPoiWebsitesForCrawlBatch,
+  markPoiWebsiteCrawled,
+  upsertPoiWebsite,
+} from "./poiImageDb.js";
 import { filterBatch, generateThumbBatch } from "./poiImagePipeline.js";
 
 function isObject(value) {
@@ -46,6 +52,14 @@ function adminHtml() {
       .label { font-size: 12px; color: rgba(232,232,232,0.7); margin-bottom: 8px; }
       pre { white-space: pre-wrap; word-break: break-word; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.06); padding: 10px; border-radius: 12px; font-size: 12px; }
       .muted { color: rgba(232,232,232,0.6); font-size: 12px; line-height: 1.5; }
+      table { width: 100%; border-collapse: separate; border-spacing: 0; overflow: hidden; border: 1px solid rgba(255,255,255,0.08); border-radius: 12px; }
+      th, td { padding: 10px 10px; font-size: 12px; border-bottom: 1px solid rgba(255,255,255,0.06); vertical-align: top; }
+      th { text-align: left; font-weight: 600; color: rgba(232,232,232,0.8); background: rgba(255,255,255,0.03); }
+      tr:last-child td { border-bottom: 0; }
+      .thumb { width: 96px; height: 64px; border-radius: 10px; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.08); object-fit: cover; display: block; }
+      .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+      .nowrap { white-space: nowrap; }
+      .link { color: rgba(212,194,140,0.92); text-decoration: none; }
     </style>
   </head>
   <body>
@@ -62,6 +76,30 @@ function adminHtml() {
         <div class="row">
           <button id="refreshStatus" class="primary">Refresh status</button>
           <div class="muted" id="statusText">—</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="label">Website crawl status</div>
+        <div class="row">
+          <button id="refreshWebsites" class="primary">Refresh table</button>
+          <div class="muted" id="websitesHint">Shows up to 50 websites.</div>
+        </div>
+        <div style="margin-top:10px; overflow:auto;">
+          <table id="websitesTable">
+            <thead>
+              <tr>
+                <th class="nowrap">Image</th>
+                <th>POI</th>
+                <th>Website</th>
+                <th class="nowrap">Hits</th>
+                <th class="nowrap">Last crawl</th>
+                <th class="nowrap">Candidates</th>
+                <th class="nowrap">Approved</th>
+              </tr>
+            </thead>
+            <tbody id="websitesBody"></tbody>
+          </table>
         </div>
       </div>
 
@@ -154,8 +192,98 @@ function adminHtml() {
           " · DROPPED=" + data.counts.DROPPED;
       }
 
+      function fmtTs(ms) {
+        if (!ms) return "—";
+        try { return new Date(ms).toLocaleString(); } catch { return String(ms); }
+      }
+
+      function safeText(value) {
+        return typeof value === "string" ? value : "";
+      }
+
+      function domainFromUrl(url) {
+        try { return new URL(url).hostname; } catch { return url; }
+      }
+
+      async function refreshWebsites() {
+        const res = await fetch("/admin/poiimage/websites?limit=50", {
+          method: "GET",
+          headers: { "x-admin-token": token() },
+        });
+        const data = await res.json();
+        const rows = Array.isArray(data?.websites) ? data.websites : [];
+
+        const body = document.getElementById("websitesBody");
+        if (!body) return;
+        body.innerHTML = "";
+
+        for (const row of rows) {
+          const tr = document.createElement("tr");
+
+          const thumbTd = document.createElement("td");
+          if (row.thumb_r2_key) {
+            const img = document.createElement("img");
+            img.className = "thumb";
+            img.loading = "lazy";
+            img.alt = "thumb";
+            img.src = "/img/" + encodeURIComponent(row.thumb_r2_key);
+            thumbTd.appendChild(img);
+          } else {
+            const empty = document.createElement("div");
+            empty.className = "thumb";
+            thumbTd.appendChild(empty);
+          }
+          tr.appendChild(thumbTd);
+
+          const poiTd = document.createElement("td");
+          const poiId = safeText(row.poi_id);
+          poiTd.className = "mono";
+          poiTd.textContent = poiId.length > 16 ? poiId.slice(0, 16) + "…" : poiId;
+          tr.appendChild(poiTd);
+
+          const siteTd = document.createElement("td");
+          const siteUrl = safeText(row.website_url);
+          const a = document.createElement("a");
+          a.className = "link";
+          a.href = siteUrl;
+          a.target = "_blank";
+          a.rel = "noreferrer";
+          a.textContent = domainFromUrl(siteUrl);
+          siteTd.appendChild(a);
+          tr.appendChild(siteTd);
+
+          const hitsTd = document.createElement("td");
+          hitsTd.className = "nowrap";
+          hitsTd.textContent = String(row.hit_count ?? 0);
+          tr.appendChild(hitsTd);
+
+          const crawlTd = document.createElement("td");
+          crawlTd.className = "nowrap";
+          crawlTd.textContent = row.last_crawled_at ? fmtTs(row.last_crawled_at) : (row.last_crawled_date || "—");
+          tr.appendChild(crawlTd);
+
+          const candTd = document.createElement("td");
+          candTd.className = "nowrap";
+          candTd.textContent = String(row.candidates_total ?? 0);
+          tr.appendChild(candTd);
+
+          const apprTd = document.createElement("td");
+          apprTd.className = "nowrap";
+          apprTd.textContent = String(row.approved_total ?? 0);
+          tr.appendChild(apprTd);
+
+          body.appendChild(tr);
+        }
+
+        const hint = document.getElementById("websitesHint");
+        if (hint) hint.textContent = "Rows: " + rows.length;
+      }
+
       document.getElementById("refreshStatus").addEventListener("click", () => refreshStatus().catch(err => {
         document.getElementById("out").textContent = "Status error: " + err.message;
+      }));
+      document.getElementById("refreshWebsites").addEventListener("click", () => refreshWebsites().catch(err => {
+        document.getElementById("out").textContent = "Websites error: " + err.message;
       }));
 
       document.getElementById("crawlOne").addEventListener("click", async () => {
@@ -165,6 +293,7 @@ function adminHtml() {
           const data = await api("/admin/poiimage/crawl_one", { poi_id, website_url });
           document.getElementById("out").textContent = JSON.stringify(data, null, 2);
           refreshStatus().catch(() => {});
+          refreshWebsites().catch(() => {});
         } catch (err) {
           document.getElementById("out").textContent = "Crawl error: " + err.message;
         }
@@ -176,6 +305,7 @@ function adminHtml() {
           const data = await api("/admin/poiimage/crawl_batch", { limit });
           document.getElementById("out").textContent = JSON.stringify(data, null, 2);
           refreshStatus().catch(() => {});
+          refreshWebsites().catch(() => {});
         } catch (err) {
           document.getElementById("out").textContent = "Batch crawl error: " + err.message;
         }
@@ -187,6 +317,7 @@ function adminHtml() {
           const data = await api("/admin/poiimage/thumb_batch", { limit });
           document.getElementById("out").textContent = JSON.stringify(data, null, 2);
           refreshStatus().catch(() => {});
+          refreshWebsites().catch(() => {});
         } catch (err) {
           document.getElementById("out").textContent = "Thumb batch error: " + err.message;
         }
@@ -198,12 +329,14 @@ function adminHtml() {
           const data = await api("/admin/poiimage/filter_batch", { limit });
           document.getElementById("out").textContent = JSON.stringify(data, null, 2);
           refreshStatus().catch(() => {});
+          refreshWebsites().catch(() => {});
         } catch (err) {
           document.getElementById("out").textContent = "Filter batch error: " + err.message;
         }
       });
 
       refreshStatus().catch(() => {});
+      refreshWebsites().catch(() => {});
     </script>
   </body>
 </html>`;
@@ -229,6 +362,15 @@ export async function maybeHandlePoiImageAdmin(request, env) {
       DROPPED: await countCandidatesByStatus(env, { status: "DROPPED" }),
     };
     return jsonResponse({ counts });
+  }
+
+  if (url.pathname === "/admin/poiimage/websites" && request.method === "GET") {
+    const auth = requireAdminToken(request, env);
+    if (!auth.ok) return auth.response;
+    const limitParam = Number.parseInt(url.searchParams.get("limit") ?? "", 10);
+    const limit = Number.isInteger(limitParam) ? limitParam : 50;
+    const websites = await listPoiWebsiteStatus(env, { limit });
+    return jsonResponse({ websites });
   }
 
   if (url.pathname === "/admin/poiimage/crawl_one" && request.method === "POST") {

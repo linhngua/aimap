@@ -216,21 +216,6 @@ final class MapViewModel: ObservableObject {
                 selectedCategory = best.0
                 return
             }
-
-            // If we have results, but none in visible buckets, fall back to any with items.
-            let allCounts: [(POICategory, Int, Double)] = POICategory.allCases.map { category in
-                let count = categoryCounts[category] ?? 0
-                let score = listItems(for: category).first?.score ?? 0
-                return (category, count, score)
-            }
-            let bestAny = allCounts.sorted { lhs, rhs in
-                if lhs.1 != rhs.1 { return lhs.1 > rhs.1 }
-                return lhs.2 > rhs.2
-            }.first
-            if let bestAny, bestAny.1 > 0 {
-                selectedCategory = bestAny.0
-                return
-            }
         }
 
         selectedCategory = allowed.first ?? .restaurants
